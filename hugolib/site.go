@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"mime"
 	"net/url"
 	"os"
@@ -27,11 +28,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gohugoio/hugo/common/maps"
+	"github.com/gohugoio/hugo/publisher"
+	"github.com/gohugoio/hugo/resource"
+
 	"github.com/gohugoio/hugo/langs"
 
 	src "github.com/gohugoio/hugo/source"
-
-	"github.com/gohugoio/hugo/resource"
 
 	"golang.org/x/sync/errgroup"
 
@@ -52,14 +55,11 @@ import (
 	"github.com/gohugoio/hugo/related"
 	"github.com/gohugoio/hugo/source"
 	"github.com/gohugoio/hugo/tpl"
-	"github.com/gohugoio/hugo/transform"
 	"github.com/spf13/afero"
 	"github.com/spf13/cast"
 	"github.com/spf13/nitro"
 	"github.com/spf13/viper"
 )
-
-var _ = transform.AbsURL
 
 // used to indicate if run as a test.
 var testMode bool
@@ -126,6 +126,8 @@ type Site struct {
 	outputFormatsConfig output.Formats
 	mediaTypesConfig    media.Types
 
+	siteConfig SiteConfig
+
 	// How to handle page front matter.
 	frontmatterHandler pagemeta.FrontMatterHandler
 
@@ -140,13 +142,15 @@ type Site struct {
 	renderFormats output.Formats
 
 	// Logger etc.
-	*deps.Deps   `json:"-"`
-	resourceSpec *resource.Spec
+	*deps.Deps `json:"-"`
 
 	// The func used to title case titles.
 	titleFunc func(s string) string
 
 	relatedDocsHandler *relatedDocsHandler
+	siteRefLinker
+
+	publisher publisher.Publisher
 }
 
 type siteRenderingContext struct {
@@ -183,15 +187,18 @@ func (s *Site) reset() *Site {
 		disabledKinds:       s.disabledKinds,
 		titleFunc:           s.titleFunc,
 		relatedDocsHandler:  newSearchIndexHandler(s.relatedDocsHandler.cfg),
+		siteRefLinker:       s.siteRefLinker,
 		outputFormats:       s.outputFormats,
 		rc:                  s.rc,
 		outputFormatsConfig: s.outputFormatsConfig,
 		frontmatterHandler:  s.frontmatterHandler,
 		mediaTypesConfig:    s.mediaTypesConfig,
-		resourceSpec:        s.resourceSpec,
 		Language:            s.Language,
 		owner:               s.owner,
+		publisher:           s.publisher,
+		siteConfig:          s.siteConfig,
 		PageCollections:     newPageCollections()}
+
 }
 
 // newSite creates a new site with the given configuration.
@@ -277,8 +284,6 @@ func newSite(cfg deps.DepsCfg) (*Site, error) {
 		frontmatterHandler:  frontMatterHandler,
 	}
 
-	s.Info = newSiteInfo(siteBuilderCfg{s: s, pageCollections: c, language: s.Language})
-
 	return s, nil
 
 }
@@ -292,7 +297,7 @@ func NewSite(cfg deps.DepsCfg) (*Site, error) {
 		return nil, err
 	}
 
-	if err = applyDepsIfNeeded(cfg, s); err != nil {
+	if err = applyDeps(cfg, s); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +339,7 @@ func newSiteForLang(lang *langs.Language, withTemplate ...func(templ tpl.Templat
 		return nil
 	}
 
-	cfg := deps.DepsCfg{WithTemplate: withTemplates, Language: lang, Cfg: lang}
+	cfg := deps.DepsCfg{WithTemplate: withTemplates, Cfg: lang}
 
 	return NewSiteForCfg(cfg)
 
@@ -344,16 +349,12 @@ func newSiteForLang(lang *langs.Language, withTemplate ...func(templ tpl.Templat
 // The site will have a template system loaded and ready to use.
 // Note: This is mainly used in single site tests.
 func NewSiteForCfg(cfg deps.DepsCfg) (*Site, error) {
-	s, err := newSite(cfg)
-
+	h, err := NewHugoSites(cfg)
 	if err != nil {
 		return nil, err
 	}
+	return h.Sites[0], nil
 
-	if err := applyDepsIfNeeded(cfg, s); err != nil {
-		return nil, err
-	}
-	return s, nil
 }
 
 type SiteInfos []*SiteInfo
@@ -371,33 +372,33 @@ type SiteInfo struct {
 	Authors    AuthorList
 	Social     SiteSocial
 	*PageCollections
-	Menus                 *Menus
-	Hugo                  *HugoInfo
-	Title                 string
-	RSSLink               string
-	Author                map[string]interface{}
-	LanguageCode          string
-	Copyright             string
-	LastChange            time.Time
-	Permalinks            PermalinkOverrides
-	Params                map[string]interface{}
-	BuildDrafts           bool
-	canonifyURLs          bool
-	relativeURLs          bool
-	uglyURLs              func(p *Page) bool
-	preserveTaxonomyNames bool
-	Data                  *map[string]interface{}
-
-	Config SiteConfig
-
+	Menus                          *Menus
+	Hugo                           *HugoInfo
+	Title                          string
+	RSSLink                        string
+	Author                         map[string]interface{}
+	LanguageCode                   string
+	Copyright                      string
+	LastChange                     time.Time
+	Permalinks                     PermalinkOverrides
+	Params                         map[string]interface{}
+	BuildDrafts                    bool
+	canonifyURLs                   bool
+	relativeURLs                   bool
+	uglyURLs                       func(p *Page) bool
+	preserveTaxonomyNames          bool
+	Data                           *map[string]interface{}
 	owner                          *HugoSites
 	s                              *Site
-	multilingual                   *Multilingual
 	Language                       *langs.Language
 	LanguagePrefix                 string
 	Languages                      langs.Languages
 	defaultContentLanguageInSubdir bool
 	sectionPagesMenu               string
+}
+
+func (s *SiteInfo) Config() SiteConfig {
+	return s.s.siteConfig
 }
 
 func (s *SiteInfo) String() string {
@@ -423,34 +424,13 @@ func (s *SiteInfo) ServerPort() int {
 
 // GoogleAnalytics is kept here for historic reasons.
 func (s *SiteInfo) GoogleAnalytics() string {
-	return s.Config.Services.GoogleAnalytics.ID
+	return s.Config().Services.GoogleAnalytics.ID
 
 }
 
 // DisqusShortname is kept here for historic reasons.
 func (s *SiteInfo) DisqusShortname() string {
-	return s.Config.Services.Disqus.Shortname
-}
-
-// Used in tests.
-
-type siteBuilderCfg struct {
-	language        *langs.Language
-	s               *Site
-	pageCollections *PageCollections
-}
-
-// TODO(bep) get rid of this
-func newSiteInfo(cfg siteBuilderCfg) SiteInfo {
-	return SiteInfo{
-		s:               cfg.s,
-		multilingual:    newMultiLingualForLanguage(cfg.language),
-		PageCollections: cfg.pageCollections,
-		Params:          make(map[string]interface{}),
-		uglyURLs: func(p *Page) bool {
-			return false
-		},
-	}
+	return s.Config().Services.Disqus.Shortname
 }
 
 // SiteSocial is a place to put social details on a site level. These are the
@@ -488,27 +468,60 @@ func (s *SiteInfo) IsServer() bool {
 	return s.owner.running
 }
 
-func (s *SiteInfo) refLink(ref string, page *Page, relative bool, outputFormat string) (string, error) {
+type siteRefLinker struct {
+	s *Site
+
+	errorLogger *log.Logger
+	notFoundURL string
+}
+
+func newSiteRefLinker(cfg config.Provider, s *Site) (siteRefLinker, error) {
+	logger := s.Log.ERROR
+
+	notFoundURL := cfg.GetString("refLinksNotFoundURL")
+	errLevel := cfg.GetString("refLinksErrorLevel")
+	if strings.EqualFold(errLevel, "warning") {
+		logger = s.Log.WARN
+	}
+	return siteRefLinker{s: s, errorLogger: logger, notFoundURL: notFoundURL}, nil
+}
+
+func (s siteRefLinker) logNotFound(ref, what string, p *Page) {
+	if p != nil {
+		s.errorLogger.Printf("REF_NOT_FOUND: Ref %q: %s", ref, what)
+	} else {
+		s.errorLogger.Printf("REF_NOT_FOUND: Ref %q from page %q: %s", ref, p.absoluteSourceRef(), what)
+	}
+
+}
+
+func (s *siteRefLinker) refLink(ref string, page *Page, relative bool, outputFormat string) (string, error) {
+
 	var refURL *url.URL
 	var err error
 
 	ref = filepath.ToSlash(ref)
-	ref = strings.TrimPrefix(ref, "/")
 
 	refURL, err = url.Parse(ref)
 
 	if err != nil {
-		return "", err
+		return s.notFoundURL, err
 	}
 
 	var target *Page
 	var link string
 
 	if refURL.Path != "" {
-		target := s.getPage(KindPage, refURL.Path)
+		target, err := s.s.getPageNew(page, refURL.Path)
+
+		if err != nil {
+			s.logNotFound(refURL.Path, err.Error(), page)
+			return s.notFoundURL, nil
+		}
 
 		if target == nil {
-			return "", fmt.Errorf("No page found with path or logical name \"%s\".\n", refURL.Path)
+			s.logNotFound(refURL.Path, "page not found", page)
+			return s.notFoundURL, nil
 		}
 
 		var permalinker Permalinker = target
@@ -517,7 +530,8 @@ func (s *SiteInfo) refLink(ref string, page *Page, relative bool, outputFormat s
 			o := target.OutputFormats().Get(outputFormat)
 
 			if o == nil {
-				return "", fmt.Errorf("Output format %q not found for page %q", outputFormat, refURL.Path)
+				s.logNotFound(refURL.Path, fmt.Sprintf("output format %q", outputFormat), page)
+				return s.notFoundURL, nil
 			}
 			permalinker = o
 		}
@@ -549,7 +563,7 @@ func (s *SiteInfo) Ref(ref string, page *Page, options ...string) (string, error
 		outputFormat = options[0]
 	}
 
-	return s.refLink(ref, page, false, outputFormat)
+	return s.s.refLink(ref, page, false, outputFormat)
 }
 
 // RelRef will give an relative URL to ref in the given Page.
@@ -559,11 +573,15 @@ func (s *SiteInfo) RelRef(ref string, page *Page, options ...string) (string, er
 		outputFormat = options[0]
 	}
 
-	return s.refLink(ref, page, true, outputFormat)
+	return s.s.refLink(ref, page, true, outputFormat)
 }
 
 func (s *Site) running() bool {
 	return s.owner != nil && s.owner.running
+}
+
+func (s *Site) multilingual() *Multilingual {
+	return s.owner.multilingual
 }
 
 func init() {
@@ -587,8 +605,9 @@ type whatChanged struct {
 // package, so it will behave correctly with Hugo's built-in server.
 func (s *Site) RegisterMediaTypes() {
 	for _, mt := range s.mediaTypesConfig {
-		// The last one will win if there are any duplicates.
-		_ = mime.AddExtensionType("."+mt.Suffix, mt.Type()+"; charset=utf-8")
+		for _, suffix := range mt.Suffixes {
+			_ = mime.AddExtensionType(mt.Delimiter+suffix, mt.Type()+"; charset=utf-8")
+		}
 	}
 }
 
@@ -691,7 +710,11 @@ func (s *Site) processPartial(events []fsnotify.Event) (whatChanged, error) {
 		logger = helpers.NewDistinctFeedbackLogger()
 	)
 
-	for _, ev := range events {
+	cachePartitions := make([]string, len(events))
+
+	for i, ev := range events {
+		cachePartitions[i] = resource.ResourceKeyPartition(ev.Name)
+
 		if s.isContentDirEvent(ev) {
 			logger.Println("Source changed", ev)
 			sourceChanged = append(sourceChanged, ev)
@@ -717,13 +740,18 @@ func (s *Site) processPartial(events []fsnotify.Event) (whatChanged, error) {
 		}
 	}
 
+	// These in memory resource caches will be rebuilt on demand.
+	for _, s := range s.owner.Sites {
+		s.ResourceSpec.ResourceCache.DeletePartitions(cachePartitions...)
+	}
+
 	if len(tmplChanged) > 0 || len(i18nChanged) > 0 {
 		sites := s.owner.Sites
 		first := sites[0]
 
 		// TOD(bep) globals clean
 		if err := first.Deps.LoadResources(); err != nil {
-			s.Log.ERROR.Println(err)
+			return whatChanged{}, err
 		}
 
 		s.TemplateHandler().PrintErrors()
@@ -731,7 +759,12 @@ func (s *Site) processPartial(events []fsnotify.Event) (whatChanged, error) {
 		for i := 1; i < len(sites); i++ {
 			site := sites[i]
 			var err error
-			site.Deps, err = first.Deps.ForLanguage(site.Language)
+			depsCfg := deps.DepsCfg{
+				Language:      site.Language,
+				MediaTypes:    site.mediaTypesConfig,
+				OutputFormats: site.outputFormatsConfig,
+			}
+			site.Deps, err = first.Deps.ForLanguage(depsCfg)
 			if err != nil {
 				return whatChanged{}, err
 			}
@@ -797,10 +830,11 @@ func (s *Site) processPartial(events []fsnotify.Event) (whatChanged, error) {
 		if err := s.readAndProcessContent(filenamesChanged...); err != nil {
 			return whatChanged{}, err
 		}
+
 	}
 
 	changed := whatChanged{
-		source: len(sourceChanged) > 0,
+		source: len(sourceChanged) > 0 || len(shortcodesChanged) > 0,
 		other:  len(tmplChanged) > 0 || len(i18nChanged) > 0 || len(dataChanged) > 0,
 		files:  sourceFilesChanged,
 	}
@@ -1085,11 +1119,6 @@ func (s *Site) initializeSiteInfo() error {
 		languagePrefix = "/" + lang.Lang
 	}
 
-	var multilingual *Multilingual
-	if s.owner != nil {
-		multilingual = s.owner.multilingual
-	}
-
 	var uglyURLs = func(p *Page) bool {
 		return false
 	}
@@ -1115,18 +1144,12 @@ func (s *Site) initializeSiteInfo() error {
 		}
 	}
 
-	siteConfig, err := loadSiteConfig(lang)
-	if err != nil {
-		return err
-	}
-
 	s.Info = SiteInfo{
 		Title:                          lang.GetString("title"),
 		Author:                         lang.GetStringMap("author"),
 		Social:                         lang.GetStringMapString("social"),
 		LanguageCode:                   lang.GetString("languageCode"),
 		Copyright:                      lang.GetString("copyright"),
-		multilingual:                   multilingual,
 		Language:                       lang,
 		LanguagePrefix:                 languagePrefix,
 		Languages:                      languages,
@@ -1144,7 +1167,6 @@ func (s *Site) initializeSiteInfo() error {
 		Data:                           &s.Data,
 		owner:                          s.owner,
 		s:                              s,
-		Config:                         siteConfig,
 		// TODO(bep) make this Menu and similar into delegate methods on SiteInfo
 		Taxonomies: s.Taxonomies,
 	}
@@ -1240,7 +1262,7 @@ func (s *Site) readAndProcessContent(filenames ...string) error {
 
 	mainHandler := &contentCaptureResultHandler{contentProcessors: contentProcessors, defaultContentProcessor: defaultContentProcessor}
 
-	sourceSpec := source.NewSourceSpec(s.PathSpec, s.BaseFs.ContentFs)
+	sourceSpec := source.NewSourceSpec(s.PathSpec, s.BaseFs.Content.Fs)
 
 	if s.running() {
 		// Need to track changes.
@@ -1497,7 +1519,7 @@ func (s *Site) resetBuildState() {
 	for _, p := range s.rawAllPages {
 		p.subSections = Pages{}
 		p.parent = nil
-		p.scratch = newScratch()
+		p.scratch = maps.NewScratch()
 		p.mainPageOutput = nil
 	}
 }
@@ -1584,13 +1606,15 @@ func (s *Site) appendThemeTemplates(in []string) []string {
 
 }
 
-// GetPage looks up a page of a given type in the path given.
-//    {{ with .Site.GetPage "section" "blog" }}{{ .Title }}{{ end }}
-//
-// This will return nil when no page could be found, and will return the
-// first page found if the key is ambigous.
-func (s *SiteInfo) GetPage(typ string, path ...string) (*Page, error) {
-	return s.getPage(typ, path...), nil
+// GetPage looks up a page of a given type for the given ref.
+// In Hugo <= 0.44 you had to add Page Kind (section, home) etc. as the first
+// argument and then either a unix styled path (with or without a leading slash))
+// or path elements separated.
+// When we now remove the Kind from this API, we need to make the transition as painless
+// as possible for existing sites. Most sites will use {{ .Site.GetPage "section" "my/section" }},
+// i.e. 2 arguments, so we test for that.
+func (s *SiteInfo) GetPage(ref ...string) (*Page, error) {
+	return s.getPageOldVersion(ref...)
 }
 
 func (s *Site) permalinkForOutputFormat(link string, f output.Format) (string, error) {
@@ -1615,8 +1639,8 @@ func (s *Site) permalink(link string) string {
 
 }
 
-func (s *Site) renderAndWriteXML(statCounter *uint64, name string, dest string, d interface{}, layouts ...string) error {
-	s.Log.DEBUG.Printf("Render XML for %q to %q", name, dest)
+func (s *Site) renderAndWriteXML(statCounter *uint64, name string, targetPath string, d interface{}, layouts ...string) error {
+	s.Log.DEBUG.Printf("Render XML for %q to %q", name, targetPath)
 	renderBuffer := bp.GetBuffer()
 	defer bp.PutBuffer(renderBuffer)
 	renderBuffer.WriteString("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>\n")
@@ -1626,30 +1650,32 @@ func (s *Site) renderAndWriteXML(statCounter *uint64, name string, dest string, 
 		return nil
 	}
 
-	outBuffer := bp.GetBuffer()
-	defer bp.PutBuffer(outBuffer)
-
-	var path []byte
+	var path string
 	if s.Info.relativeURLs {
-		path = []byte(helpers.GetDottedRelativePath(dest))
+		path = helpers.GetDottedRelativePath(targetPath)
 	} else {
 		s := s.PathSpec.BaseURL.String()
 		if !strings.HasSuffix(s, "/") {
 			s += "/"
 		}
-		path = []byte(s)
-	}
-	transformer := transform.NewChain(transform.AbsURLInXML)
-	if err := transformer.Apply(outBuffer, renderBuffer, path); err != nil {
-		s.DistinctErrorLog.Println(err)
-		return nil
+		path = s
 	}
 
-	return s.publish(statCounter, dest, outBuffer)
+	pd := publisher.Descriptor{
+		Src:         renderBuffer,
+		TargetPath:  targetPath,
+		StatCounter: statCounter,
+		// For the minification part of XML,
+		// we currently only use the MIME type.
+		OutputFormat: output.RSSFormat,
+		AbsURLPath:   path,
+	}
+
+	return s.publisher.Publish(pd)
 
 }
 
-func (s *Site) renderAndWritePage(statCounter *uint64, name string, dest string, p *PageOutput, layouts ...string) error {
+func (s *Site) renderAndWritePage(statCounter *uint64, name string, targetPath string, p *PageOutput, layouts ...string) error {
 	renderBuffer := bp.GetBuffer()
 	defer bp.PutBuffer(renderBuffer)
 
@@ -1662,49 +1688,44 @@ func (s *Site) renderAndWritePage(statCounter *uint64, name string, dest string,
 		return nil
 	}
 
-	outBuffer := bp.GetBuffer()
-	defer bp.PutBuffer(outBuffer)
-
-	transformLinks := transform.NewEmptyTransforms()
-
 	isHTML := p.outputFormat.IsHTML
 
-	if isHTML {
-		if s.Info.relativeURLs || s.Info.canonifyURLs {
-			transformLinks = append(transformLinks, transform.AbsURL)
-		}
-
-		if s.running() && s.Cfg.GetBool("watch") && !s.Cfg.GetBool("disableLiveReload") {
-			transformLinks = append(transformLinks, transform.LiveReloadInject(s.Cfg.GetInt("liveReloadPort")))
-		}
-
-		// For performance reasons we only inject the Hugo generator tag on the home page.
-		if p.IsHome() {
-			if !s.Cfg.GetBool("disableHugoGeneratorInject") {
-				transformLinks = append(transformLinks, transform.HugoGeneratorInject)
-			}
-		}
-	}
-
-	var path []byte
+	var path string
 
 	if s.Info.relativeURLs {
-		path = []byte(helpers.GetDottedRelativePath(dest))
+		path = helpers.GetDottedRelativePath(targetPath)
 	} else if s.Info.canonifyURLs {
 		url := s.PathSpec.BaseURL.String()
 		if !strings.HasSuffix(url, "/") {
 			url += "/"
 		}
-		path = []byte(url)
+		path = url
 	}
 
-	transformer := transform.NewChain(transformLinks...)
-	if err := transformer.Apply(outBuffer, renderBuffer, path); err != nil {
-		s.DistinctErrorLog.Println(err)
-		return nil
+	pd := publisher.Descriptor{
+		Src:          renderBuffer,
+		TargetPath:   targetPath,
+		StatCounter:  statCounter,
+		OutputFormat: p.outputFormat,
 	}
 
-	return s.publish(statCounter, dest, outBuffer)
+	if isHTML {
+		if s.Info.relativeURLs || s.Info.canonifyURLs {
+			pd.AbsURLPath = path
+		}
+
+		if s.running() && s.Cfg.GetBool("watch") && !s.Cfg.GetBool("disableLiveReload") {
+			pd.LiveReloadPort = s.Cfg.GetInt("liveReloadPort")
+		}
+
+		// For performance reasons we only inject the Hugo generator tag on the home page.
+		if p.IsHome() {
+			pd.AddHugoGeneratorTag = !s.Cfg.GetBool("disableHugoGeneratorInject")
+		}
+
+	}
+
+	return s.publisher.Publish(pd)
 }
 
 func (s *Site) renderForLayouts(name string, d interface{}, w io.Writer, layouts ...string) (err error) {
@@ -1717,6 +1738,8 @@ func (s *Site) renderForLayouts(name string, d interface{}, w io.Writer, layouts
 				templName = templ.Name()
 			}
 			s.DistinctErrorLog.Printf("Failed to render %q: %s", templName, r)
+			s.DistinctErrorLog.Printf("Stack Trace:\n%s", stackTrace(1200))
+
 			// TOD(bep) we really need to fix this. Also see below.
 			if !s.running() && !testMode {
 				os.Exit(-1)
@@ -1753,7 +1776,7 @@ func (s *Site) renderForLayouts(name string, d interface{}, w io.Writer, layouts
 
 func (s *Site) findFirstTemplate(layouts ...string) tpl.Template {
 	for _, layout := range layouts {
-		if templ := s.Tmpl.Lookup(layout); templ != nil {
+		if templ, found := s.Tmpl.Lookup(layout); found {
 			return templ
 		}
 	}
@@ -1782,7 +1805,7 @@ func (s *Site) newNodePage(typ string, sections ...string) *Page {
 		pageContentInit: &pageContentInit{},
 		Kind:            typ,
 		Source:          Source{File: &source.FileInfo{}},
-		Data:            make(map[string]interface{}),
+		data:            make(map[string]interface{}),
 		Site:            &s.Info,
 		sections:        sections,
 		s:               s}
@@ -1797,7 +1820,7 @@ func (s *Site) newHomePage() *Page {
 	p := s.newNodePage(KindHome)
 	p.title = s.Info.Title
 	pages := Pages{}
-	p.Data["Pages"] = pages
+	p.data["Pages"] = pages
 	p.Pages = pages
 	return p
 }

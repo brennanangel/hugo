@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/output"
 
 	"github.com/gohugoio/hugo/media"
@@ -45,7 +46,7 @@ type ShortcodeWithPage struct {
 	// this ordinal will represent the position of this shortcode in the page content.
 	Ordinal int
 
-	scratch *Scratch
+	scratch *maps.Scratch
 }
 
 // Site returns information about the current site.
@@ -54,20 +55,20 @@ func (scp *ShortcodeWithPage) Site() *SiteInfo {
 }
 
 // Ref is a shortcut to the Ref method on Page.
-func (scp *ShortcodeWithPage) Ref(ref string) (string, error) {
-	return scp.Page.Ref(ref)
+func (scp *ShortcodeWithPage) Ref(args map[string]interface{}) (string, error) {
+	return scp.Page.Ref(args)
 }
 
 // RelRef is a shortcut to the RelRef method on Page.
-func (scp *ShortcodeWithPage) RelRef(ref string) (string, error) {
-	return scp.Page.RelRef(ref)
+func (scp *ShortcodeWithPage) RelRef(args map[string]interface{}) (string, error) {
+	return scp.Page.RelRef(args)
 }
 
 // Scratch returns a scratch-pad scoped for this shortcode. This can be used
 // as a temporary storage for variables, counters etc.
-func (scp *ShortcodeWithPage) Scratch() *Scratch {
+func (scp *ShortcodeWithPage) Scratch() *maps.Scratch {
 	if scp.scratch == nil {
-		scp.scratch = newScratch()
+		scp.scratch = maps.NewScratch()
 	}
 	return scp.scratch
 }
@@ -172,11 +173,11 @@ type scKey struct {
 }
 
 func newScKey(m media.Type, shortcodeplaceholder string) scKey {
-	return scKey{Suffix: m.Suffix, ShortcodePlaceholder: shortcodeplaceholder}
+	return scKey{Suffix: m.Suffix(), ShortcodePlaceholder: shortcodeplaceholder}
 }
 
 func newScKeyFromLangAndOutputFormat(lang string, o output.Format, shortcodeplaceholder string) scKey {
-	return scKey{Lang: lang, Suffix: o.MediaType.Suffix, OutputFormat: o.Name, ShortcodePlaceholder: shortcodeplaceholder}
+	return scKey{Lang: lang, Suffix: o.MediaType.Suffix(), OutputFormat: o.Name, ShortcodePlaceholder: shortcodeplaceholder}
 }
 
 func newDefaultScKey(shortcodeplaceholder string) scKey {
@@ -545,7 +546,7 @@ Loop:
 			}
 
 			var err error
-			isInner, err = isInnerShortcode(tmpl)
+			isInner, err = isInnerShortcode(tmpl.(tpl.TemplateExecutor))
 			if err != nil {
 				return sc, fmt.Errorf("Failed to handle template for shortcode %q for page %q: %s", sc.name, p.Path(), err)
 			}
@@ -709,7 +710,7 @@ func replaceShortcodeTokens(source []byte, prefix string, replacements map[strin
 	return source, nil
 }
 
-func getShortcodeTemplateForTemplateKey(key scKey, shortcodeName string, t tpl.TemplateFinder) *tpl.TemplateAdapter {
+func getShortcodeTemplateForTemplateKey(key scKey, shortcodeName string, t tpl.TemplateFinder) tpl.Template {
 	isInnerShortcodeCache.RLock()
 	defer isInnerShortcodeCache.RUnlock()
 
@@ -737,13 +738,13 @@ func getShortcodeTemplateForTemplateKey(key scKey, shortcodeName string, t tpl.T
 
 	for _, name := range names {
 
-		if x := t.Lookup("shortcodes/" + name); x != nil {
+		if x, found := t.Lookup("shortcodes/" + name); found {
 			return x
 		}
-		if x := t.Lookup("theme/shortcodes/" + name); x != nil {
+		if x, found := t.Lookup("theme/shortcodes/" + name); found {
 			return x
 		}
-		if x := t.Lookup("_internal/shortcodes/" + name); x != nil {
+		if x, found := t.Lookup("_internal/shortcodes/" + name); found {
 			return x
 		}
 	}

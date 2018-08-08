@@ -1,7 +1,9 @@
 package hugolib
 
 import (
+	"io/ioutil"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"bytes"
@@ -82,6 +84,20 @@ func newTestSitesBuilder(t testing.TB) *sitesBuilder {
 	return &sitesBuilder{T: t, Fs: fs, configFormat: "toml", dumper: litterOptions}
 }
 
+func createTempDir(prefix string) (string, func(), error) {
+	workDir, err := ioutil.TempDir("", prefix)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if runtime.GOOS == "darwin" && !strings.HasPrefix(workDir, "/private") {
+		// To get the entry folder in line with the rest. This its a little bit
+		// mysterious, but so be it.
+		workDir = "/private" + workDir
+	}
+	return workDir, func() { os.RemoveAll(workDir) }, nil
+}
+
 func (s *sitesBuilder) Running() *sitesBuilder {
 	s.running = true
 	return s
@@ -114,6 +130,7 @@ func (s *sitesBuilder) WithConfigTemplate(data interface{}, format, configTempla
 func (s *sitesBuilder) WithViper(v *viper.Viper) *sitesBuilder {
 	loadDefaultSettingsFor(v)
 	s.Cfg = v
+
 	return s
 }
 
@@ -441,7 +458,7 @@ func (s *sitesBuilder) AssertFileContent(filename string, matches ...string) {
 	content := readDestination(s.T, s.Fs, filename)
 	for _, match := range matches {
 		if !strings.Contains(content, match) {
-			s.Fatalf("No match for %q in content for %s\n%s", match, filename, content)
+			s.Fatalf("No match for %q in content for %s\n%s\n%q", match, filename, content, content)
 		}
 	}
 }
@@ -519,7 +536,7 @@ func newTestPathSpec(fs *hugofs.Fs, v *viper.Viper) *helpers.PathSpec {
 	return ps
 }
 
-func newTestDefaultPathSpec() *helpers.PathSpec {
+func newTestDefaultPathSpec(t *testing.T) *helpers.PathSpec {
 	v := viper.New()
 	// Easier to reason about in tests.
 	v.Set("disablePathToLower", true)
@@ -528,8 +545,14 @@ func newTestDefaultPathSpec() *helpers.PathSpec {
 	v.Set("i18nDir", "i18n")
 	v.Set("layoutDir", "layouts")
 	v.Set("archetypeDir", "archetypes")
+	v.Set("assetDir", "assets")
+	v.Set("resourceDir", "resources")
+	v.Set("publishDir", "public")
 	fs := hugofs.NewDefault(v)
-	ps, _ := helpers.NewPathSpec(fs, v)
+	ps, err := helpers.NewPathSpec(fs, v)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return ps
 }
 
@@ -560,7 +583,7 @@ func newTestSite(t testing.TB, configKeyValues ...interface{}) *Site {
 		cfg.Set(configKeyValues[i].(string), configKeyValues[i+1])
 	}
 
-	d := deps.DepsCfg{Language: langs.NewLanguage("en", cfg), Fs: fs, Cfg: cfg}
+	d := deps.DepsCfg{Fs: fs, Cfg: cfg}
 
 	s, err := NewSiteForCfg(d)
 

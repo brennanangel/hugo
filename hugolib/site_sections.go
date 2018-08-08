@@ -58,6 +58,29 @@ func (p *Page) CurrentSection() *Page {
 	return v.parent
 }
 
+// FirstSection returns the section on level 1 below home, e.g. "/docs".
+// For the home page, this will return itself.
+func (p *Page) FirstSection() *Page {
+	v := p
+	if v.origOnCopy != nil {
+		v = v.origOnCopy
+	}
+
+	if v.parent == nil || v.parent.IsHome() {
+		return v
+	}
+
+	parent := v.parent
+	for {
+		current := parent
+		parent = parent.parent
+		if parent == nil || parent.IsHome() {
+			return current
+		}
+	}
+
+}
+
 // InSection returns whether the given page is in the current section.
 // Note that this will always return false for pages that are
 // not either regular, home or section pages.
@@ -334,6 +357,6 @@ func (s *Site) assembleSections() Pages {
 func (p *Page) setPagePages(pages Pages) {
 	pages.Sort()
 	p.Pages = pages
-	p.Data = make(map[string]interface{})
-	p.Data["Pages"] = pages
+	p.data = make(map[string]interface{})
+	p.data["Pages"] = pages
 }

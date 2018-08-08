@@ -43,7 +43,6 @@ import (
 	"github.com/gohugoio/hugo/helpers"
 	"github.com/gohugoio/hugo/hugolib"
 	"github.com/gohugoio/hugo/livereload"
-	"github.com/gohugoio/hugo/utils"
 	"github.com/gohugoio/hugo/watcher"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
@@ -210,16 +209,25 @@ func initializeFlags(cmd *cobra.Command, cfg config.Provider) {
 		"verboseLog",
 	}
 
+	// Will set a value even if it is the default.
+	flagKeysForced := []string{
+		"minify",
+	}
+
 	for _, key := range persFlagKeys {
-		setValueFromFlag(cmd.PersistentFlags(), key, cfg, "")
+		setValueFromFlag(cmd.PersistentFlags(), key, cfg, "", false)
 	}
 	for _, key := range flagKeys {
-		setValueFromFlag(cmd.Flags(), key, cfg, "")
+		setValueFromFlag(cmd.Flags(), key, cfg, "", false)
+	}
+
+	for _, key := range flagKeysForced {
+		setValueFromFlag(cmd.Flags(), key, cfg, "", true)
 	}
 
 	// Set some "config aliases"
-	setValueFromFlag(cmd.Flags(), "destination", cfg, "publishDir")
-	setValueFromFlag(cmd.Flags(), "i18n-warnings", cfg, "logI18nWarnings")
+	setValueFromFlag(cmd.Flags(), "destination", cfg, "publishDir", false)
+	setValueFromFlag(cmd.Flags(), "i18n-warnings", cfg, "logI18nWarnings", false)
 
 }
 
@@ -230,9 +238,9 @@ var deprecatedFlags = map[string]bool{
 	strings.ToLower("canonifyURLs"):          true,
 }
 
-func setValueFromFlag(flags *flag.FlagSet, key string, cfg config.Provider, targetKey string) {
+func setValueFromFlag(flags *flag.FlagSet, key string, cfg config.Provider, targetKey string, force bool) {
 	key = strings.TrimSpace(key)
-	if flags.Changed(key) {
+	if (force && flags.Lookup(key) != nil) || flags.Changed(key) {
 		if _, deprecated := deprecatedFlags[strings.ToLower(key)]; deprecated {
 			msg := fmt.Sprintf(`Set "%s = true" in your config.toml.
 If you need to set this configuration value from the command line, set it via an OS environment variable: "HUGO_%s=true hugo"`, key, strings.ToUpper(key))
@@ -351,7 +359,7 @@ func (c *commandeer) build() error {
 		c.Logger.FEEDBACK.Println("Watching for changes in", c.hugo.PathSpec.AbsPathify(c.Cfg.GetString("contentDir")))
 		c.Logger.FEEDBACK.Println("Press Ctrl+C to stop")
 		watcher, err := c.newWatcher(watchDirs...)
-		utils.CheckErr(c.Logger, err)
+		checkErr(c.Logger, err)
 		defer watcher.Close()
 
 		var sigs = make(chan os.Signal)
@@ -474,6 +482,10 @@ func (c *commandeer) copyStaticTo(sourceFs *filesystems.SourceFilesystem) (uint6
 	return numFiles, err
 }
 
+func (c *commandeer) firstPathSpec() *helpers.PathSpec {
+	return c.hugo.Sites[0].PathSpec
+}
+
 func (c *commandeer) timeTrack(start time.Time, name string) {
 	if c.h.quiet {
 		return
@@ -552,8 +564,8 @@ func (c *commandeer) getDirList() ([]string, error) {
 	// SymbolicWalk will log anny ERRORs
 	// Also note that the Dirnames fetched below will contain any relevant theme
 	// directories.
-	for _, contentDir := range c.hugo.PathSpec.BaseFs.AbsContentDirs {
-		_ = helpers.SymbolicWalk(c.Fs.Source, contentDir.Value, symLinkWalker)
+	for _, contentDir := range c.hugo.PathSpec.BaseFs.Content.Dirnames {
+		_ = helpers.SymbolicWalk(c.Fs.Source, contentDir, symLinkWalker)
 	}
 
 	for _, staticDir := range c.hugo.PathSpec.BaseFs.Data.Dirnames {
@@ -572,6 +584,10 @@ func (c *commandeer) getDirList() ([]string, error) {
 		for _, staticDir := range staticFilesystem.Dirnames {
 			_ = helpers.SymbolicWalk(c.Fs.Source, staticDir, regularWalker)
 		}
+	}
+
+	for _, assetDir := range c.hugo.PathSpec.BaseFs.Assets.Dirnames {
+		_ = helpers.SymbolicWalk(c.Fs.Source, assetDir, regularWalker)
 	}
 
 	if len(nested) > 0 {
@@ -594,14 +610,6 @@ func (c *commandeer) getDirList() ([]string, error) {
 	sort.Strings(a)
 
 	return a, nil
-}
-
-func (c *commandeer) recreateAndBuildSites(watching bool) (err error) {
-	defer c.timeTrack(time.Now(), "Total")
-	if !c.h.quiet {
-		c.Logger.FEEDBACK.Println("Started building sites ...")
-	}
-	return c.hugo.Build(hugolib.BuildCfg{CreateSitesFromConfig: true})
 }
 
 func (c *commandeer) resetAndBuildSites() (err error) {
@@ -637,9 +645,10 @@ func (c *commandeer) rebuildSites(events []fsnotify.Event) error {
 }
 
 func (c *commandeer) fullRebuild() {
+	c.commandeerHugoState = &commandeerHugoState{}
 	if err := c.loadConfig(true, true); err != nil {
 		jww.ERROR.Println("Failed to reload config:", err)
-	} else if err := c.recreateAndBuildSites(true); err != nil {
+	} else if err := c.buildSites(); err != nil {
 		jww.ERROR.Println(err)
 	} else if !c.h.buildWatch && !c.Cfg.GetBool("disableLiveReload") {
 		livereload.ForceRefresh()
@@ -812,7 +821,7 @@ func (c *commandeer) newWatcher(dirList ...string) (*watcher.Batcher, error) {
 						c.Logger.FEEDBACK.Printf("Syncing all static files\n")
 						_, err := c.copyStatic()
 						if err != nil {
-							utils.StopOnErr(c.Logger, err, "Error copying static files to publish dir")
+							stopOnErr(c.Logger, err, "Error copying static files to publish dir")
 						}
 					} else {
 						if err := staticSyncer.syncsStaticEvents(staticEvents); err != nil {
@@ -825,13 +834,11 @@ func (c *commandeer) newWatcher(dirList ...string) (*watcher.Batcher, error) {
 						// Will block forever trying to write to a channel that nobody is reading if livereload isn't initialized
 
 						// force refresh when more than one file
-						if len(staticEvents) > 0 {
-							for _, ev := range staticEvents {
-
-								path := c.hugo.BaseFs.SourceFilesystems.MakeStaticPathRelative(ev.Name)
-								livereload.RefreshPath(path)
-							}
-
+						if len(staticEvents) == 1 {
+							ev := staticEvents[0]
+							path := c.hugo.BaseFs.SourceFilesystems.MakeStaticPathRelative(ev.Name)
+							path = c.firstPathSpec().RelURL(helpers.ToSlashTrimLeading(path), false)
+							livereload.RefreshPath(path)
 						} else {
 							livereload.ForceRefresh()
 						}
@@ -839,34 +846,54 @@ func (c *commandeer) newWatcher(dirList ...string) (*watcher.Batcher, error) {
 				}
 
 				if len(dynamicEvents) > 0 {
+					partitionedEvents := partitionDynamicEvents(
+						c.firstPathSpec().BaseFs.SourceFilesystems,
+						dynamicEvents)
+
 					doLiveReload := !c.h.buildWatch && !c.Cfg.GetBool("disableLiveReload")
-					onePageName := pickOneWriteOrCreatePath(dynamicEvents)
+					onePageName := pickOneWriteOrCreatePath(partitionedEvents.ContentEvents)
 
 					c.Logger.FEEDBACK.Println("\nChange detected, rebuilding site")
 					const layout = "2006-01-02 15:04:05.000 -0700"
 					c.Logger.FEEDBACK.Println(time.Now().Format(layout))
 
+					c.changeDetector.PrepareNew()
 					if err := c.rebuildSites(dynamicEvents); err != nil {
 						c.Logger.ERROR.Println("Failed to rebuild site:", err)
 					}
 
 					if doLiveReload {
-						navigate := c.Cfg.GetBool("navigateToChanged")
-						// We have fetched the same page above, but it may have
-						// changed.
-						var p *hugolib.Page
-
-						if navigate {
-							if onePageName != "" {
-								p = c.hugo.GetContentPage(onePageName)
+						if len(partitionedEvents.ContentEvents) == 0 && len(partitionedEvents.AssetEvents) > 0 {
+							changed := c.changeDetector.changed()
+							if c.changeDetector != nil && len(changed) == 0 {
+								// Nothing has changed.
+								continue
+							} else if len(changed) == 1 {
+								pathToRefresh := c.firstPathSpec().RelURL(helpers.ToSlashTrimLeading(changed[0]), false)
+								livereload.RefreshPath(pathToRefresh)
+							} else {
+								livereload.ForceRefresh()
 							}
-
 						}
 
-						if p != nil {
-							livereload.NavigateToPathForPort(p.RelPermalink(), p.Site.ServerPort())
-						} else {
-							livereload.ForceRefresh()
+						if len(partitionedEvents.ContentEvents) > 0 {
+
+							navigate := c.Cfg.GetBool("navigateToChanged")
+							// We have fetched the same page above, but it may have
+							// changed.
+							var p *hugolib.Page
+
+							if navigate {
+								if onePageName != "" {
+									p = c.hugo.GetContentPage(onePageName)
+								}
+							}
+
+							if p != nil {
+								livereload.NavigateToPathForPort(p.RelPermalink(), p.Site.ServerPort())
+							} else {
+								livereload.ForceRefresh()
+							}
 						}
 					}
 				}
@@ -879,6 +906,26 @@ func (c *commandeer) newWatcher(dirList ...string) (*watcher.Batcher, error) {
 	}()
 
 	return watcher, nil
+}
+
+// dynamicEvents contains events that is considered dynamic, as in "not static".
+// Both of these categories will trigger a new build, but the asset events
+// does not fit into the "navigate to changed" logic.
+type dynamicEvents struct {
+	ContentEvents []fsnotify.Event
+	AssetEvents   []fsnotify.Event
+}
+
+func partitionDynamicEvents(sourceFs *filesystems.SourceFilesystems, events []fsnotify.Event) (de dynamicEvents) {
+	for _, e := range events {
+		if sourceFs.IsAsset(e.Name) {
+			de.AssetEvents = append(de.AssetEvents, e)
+		} else {
+			de.ContentEvents = append(de.ContentEvents, e)
+		}
+	}
+	return
+
 }
 
 func pickOneWriteOrCreatePath(events []fsnotify.Event) string {

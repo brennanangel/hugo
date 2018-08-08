@@ -21,11 +21,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gohugoio/hugo/resource"
-
 	"github.com/gohugoio/hugo/deps"
 	"github.com/gohugoio/hugo/helpers"
 	"github.com/gohugoio/hugo/langs"
+	"github.com/gohugoio/hugo/publisher"
 
 	"github.com/gohugoio/hugo/i18n"
 	"github.com/gohugoio/hugo/tpl"
@@ -131,7 +130,7 @@ func newHugoSites(cfg deps.DepsCfg, sites ...*Site) (*HugoSites, error) {
 		s.owner = h
 	}
 
-	if err := applyDepsIfNeeded(cfg, sites...); err != nil {
+	if err := applyDeps(cfg, sites...); err != nil {
 		return nil, err
 	}
 
@@ -163,7 +162,7 @@ func (h *HugoSites) initGitInfo() error {
 	return nil
 }
 
-func applyDepsIfNeeded(cfg deps.DepsCfg, sites ...*Site) error {
+func applyDeps(cfg deps.DepsCfg, sites ...*Site) error {
 	if cfg.TemplateProvider == nil {
 		cfg.TemplateProvider = tplimpl.DefaultTemplateProvider
 	}
@@ -182,8 +181,11 @@ func applyDepsIfNeeded(cfg deps.DepsCfg, sites ...*Site) error {
 			continue
 		}
 
+		cfg.Language = s.Language
+		cfg.MediaTypes = s.mediaTypesConfig
+		cfg.OutputFormats = s.outputFormatsConfig
+
 		if d == nil {
-			cfg.Language = s.Language
 			cfg.WithTemplate = s.withSiteTemplates(cfg.WithTemplate)
 
 			var err error
@@ -200,7 +202,7 @@ func applyDepsIfNeeded(cfg deps.DepsCfg, sites ...*Site) error {
 			}
 
 		} else {
-			d, err = d.ForLanguage(s.Language)
+			d, err = d.ForLanguage(cfg)
 			if err != nil {
 				return err
 			}
@@ -208,11 +210,22 @@ func applyDepsIfNeeded(cfg deps.DepsCfg, sites ...*Site) error {
 			s.Deps = d
 		}
 
-		s.resourceSpec, err = resource.NewSpec(s.Deps.PathSpec, s.mediaTypesConfig)
-		if err != nil {
+		// Set up the main publishing chain.
+		s.publisher = publisher.NewDestinationPublisher(d.PathSpec.BaseFs.PublishFs, s.outputFormatsConfig, s.mediaTypesConfig, cfg.Cfg.GetBool("minify"))
+
+		if err := s.initializeSiteInfo(); err != nil {
 			return err
 		}
 
+		siteConfig, err := loadSiteConfig(s.Language)
+		if err != nil {
+			return err
+		}
+		s.siteConfig = siteConfig
+		s.siteRefLinker, err = newSiteRefLinker(s.Language, s)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -313,7 +326,7 @@ func (h *HugoSites) createSitesFromConfig() error {
 		s.owner = h
 	}
 
-	if err := applyDepsIfNeeded(depsCfg, sites...); err != nil {
+	if err := applyDeps(depsCfg, sites...); err != nil {
 		return err
 	}
 
@@ -701,7 +714,7 @@ func (m *contentChangeMap) resolveAndRemove(filename string) (string, string, bu
 	defer m.mu.RUnlock()
 
 	// Bundles share resources, so we need to start from the virtual root.
-	relPath, _ := m.pathSpec.RelContentDir(filename)
+	relPath := m.pathSpec.RelContentDir(filename)
 	dir, name := filepath.Split(relPath)
 	if !strings.HasSuffix(dir, helpers.FilePathSeparator) {
 		dir += helpers.FilePathSeparator

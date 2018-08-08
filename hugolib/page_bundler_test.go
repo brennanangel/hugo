@@ -14,13 +14,10 @@
 package hugolib
 
 import (
-	"io/ioutil"
-
 	"github.com/gohugoio/hugo/common/loggers"
 
 	"os"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/gohugoio/hugo/helpers"
@@ -37,7 +34,6 @@ import (
 
 	"github.com/gohugoio/hugo/deps"
 	"github.com/gohugoio/hugo/hugofs"
-	"github.com/gohugoio/hugo/resource"
 	"github.com/spf13/viper"
 
 	"github.com/stretchr/testify/require"
@@ -158,7 +154,6 @@ func TestPageBundlerSiteRegular(t *testing.T) {
 				altFormat := leafBundle1.OutputFormats().Get("CUSTOMO")
 				assert.NotNil(altFormat)
 
-				assert.Equal(filepath.FromSlash("/work/base/b/my-bundle/c/logo.png"), image.(resource.Source).AbsSourceFilename())
 				assert.Equal("https://example.com/2017/pageslug/c/logo.png", image.Permalink())
 
 				th.assertFileContent(filepath.FromSlash("/work/public/2017/pageslug/c/logo.png"), "content")
@@ -327,7 +322,9 @@ func TestPageBundlerSiteWitSymbolicLinksInContent(t *testing.T) {
 	}
 
 	assert := require.New(t)
-	ps, workDir := newTestBundleSymbolicSources(t)
+	ps, clean, workDir := newTestBundleSymbolicSources(t)
+	defer clean()
+
 	cfg := ps.Cfg
 	fs := ps.Fs
 
@@ -669,7 +666,7 @@ TheContent.
 	return fs, cfg
 }
 
-func newTestBundleSymbolicSources(t *testing.T) (*helpers.PathSpec, string) {
+func newTestBundleSymbolicSources(t *testing.T) (*helpers.PathSpec, func(), string) {
 	assert := require.New(t)
 	// We need to use the OS fs for this.
 	cfg := viper.New()
@@ -677,13 +674,8 @@ func newTestBundleSymbolicSources(t *testing.T) (*helpers.PathSpec, string) {
 	fs.Destination = &afero.MemMapFs{}
 	loadDefaultSettingsFor(cfg)
 
-	workDir, err := ioutil.TempDir("", "hugosym")
-
-	if runtime.GOOS == "darwin" && !strings.HasPrefix(workDir, "/private") {
-		// To get the entry folder in line with the rest. This its a little bit
-		// mysterious, but so be it.
-		workDir = "/private" + workDir
-	}
+	workDir, clean, err := createTempDir("hugosym")
+	assert.NoError(err)
 
 	contentDir := "base"
 	cfg.Set("workingDir", workDir)
@@ -755,5 +747,5 @@ TheContent.
 
 	ps, _ := helpers.NewPathSpec(fs, cfg)
 
-	return ps, workDir
+	return ps, clean, workDir
 }

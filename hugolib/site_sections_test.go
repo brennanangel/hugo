@@ -104,11 +104,13 @@ Content
 	writeSource(t, fs, filepath.Join("layouts", "_default", "single.html"), "<html>Single|{{ .Title }}</html>")
 	writeSource(t, fs, filepath.Join("layouts", "_default", "list.html"),
 		`
-{{ $sect := (.Site.GetPage "section" "l1" "l2") }}
+{{ $sect := (.Site.GetPage "l1/l2") }}
 <html>List|{{ .Title }}|L1/l2-IsActive: {{ .InSection $sect }}
 {{ range .Paginator.Pages }}
 PAG|{{ .Title }}|{{ $sect.InSection . }}
 {{ end }}
+{{/* https://github.com/gohugoio/hugo/issues/4989 */}}
+{{ $sections := (.Site.GetPage "section" .Section).Sections.ByWeight }}
 </html>`)
 
 	cfg.Set("paginate", 2)
@@ -176,6 +178,7 @@ PAG|{{ .Title }}|{{ $sect.InSection . }}
 			active, err := home.InSection(home)
 			assert.NoError(err)
 			assert.True(active)
+			assert.Equal(p, p.FirstSection())
 		}},
 		{"l1", func(p *Page) {
 			assert.Equal("L1s", p.title)
@@ -249,6 +252,7 @@ PAG|{{ .Title }}|{{ $sect.InSection . }}
 			isAncestor, err = p.IsAncestor(l1)
 			assert.NoError(err)
 			assert.False(isAncestor)
+			assert.Equal(l1, p.FirstSection())
 
 		}},
 		{"perm a,link", func(p *Page) {
@@ -273,7 +277,7 @@ PAG|{{ .Title }}|{{ $sect.InSection . }}
 		assert.NotNil(p, fmt.Sprint(sections))
 
 		if p.Pages != nil {
-			assert.Equal(p.Pages, p.Data["Pages"])
+			assert.Equal(p.Pages, p.data["Pages"])
 		}
 		assert.NotNil(p.Parent(), fmt.Sprintf("Parent nil: %q", test.sections))
 		test.verify(p)

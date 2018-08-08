@@ -72,7 +72,13 @@ pygmentsCodefences
 : Set to true to enable syntax highlighting in code fences with a language tag in markdown (see below for an example).
 
 pygmentsStyle
-: The style of code highlighting. See https://help.farbox.com/pygments.html for a gallery. Note that this option is not relevant when `pygmentsUseClasses` is set.
+: The style of code highlighting. Note that this option is not
+  relevant when `pygmentsUseClasses` is set.
+
+  Syntax highlighting galleries:
+  **Chroma** ([short snippets](https://xyproto.github.io/splash/docs/all.html),
+  [long snippets](https://xyproto.github.io/splash/docs/longer/all.html)),
+  [Pygments](https://help.farbox.com/pygments.html)
 
 pygmentsUseClasses
 : Set to `true` to use CSS classes to format your highlighted code. See [Generate Syntax Highlighter CSS](#generate-syntax-highlighter-css).
@@ -128,7 +134,7 @@ Highlighting is carried out via the [built-in shortcode](/content-management/sho
 <section id="main">
   <div>
     <h1 id="title">{{ .Title }}</h1>
-    {{ range .Data.Pages }}
+    {{ range .Pages }}
       {{ .Render "summary"}}
     {{ end }}
   </div>
@@ -151,7 +157,7 @@ It is also possible to add syntax highlighting with GitHub flavored code fences.
 <section id="main">
   <div>
     <h1 id="title">{{ .Title }}</h1>
-    {{ range .Data.Pages }}
+    {{ range .Pages }}
       {{ .Render "summary"}}
     {{ end }}
   </div>

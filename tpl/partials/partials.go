@@ -34,18 +34,30 @@ type partialCache struct {
 	p map[string]interface{}
 }
 
+func (p *partialCache) clear() {
+	p.Lock()
+	defer p.Unlock()
+	p.p = make(map[string]interface{})
+}
+
 // New returns a new instance of the templates-namespaced template functions.
 func New(deps *deps.Deps) *Namespace {
+	cache := &partialCache{p: make(map[string]interface{})}
+	deps.BuildStartListeners.Add(
+		func() {
+			cache.clear()
+		})
+
 	return &Namespace{
 		deps:           deps,
-		cachedPartials: partialCache{p: make(map[string]interface{})},
+		cachedPartials: cache,
 	}
 }
 
 // Namespace provides template functions for the "templates" namespace.
 type Namespace struct {
 	deps           *deps.Deps
-	cachedPartials partialCache
+	cachedPartials *partialCache
 }
 
 // Include executes the named partial and returns either a string,
@@ -62,35 +74,35 @@ func (ns *Namespace) Include(name string, contextList ...interface{}) (interface
 		context = contextList[0]
 	}
 
-	for _, n := range []string{"partials/" + name, "theme/partials/" + name} {
-		templ := ns.deps.Tmpl.Lookup(n)
-		if templ == nil {
-			// For legacy reasons.
-			templ = ns.deps.Tmpl.Lookup(n + ".html")
+	n := "partials/" + name
+	templ, found := ns.deps.Tmpl.Lookup(n)
+
+	if !found {
+		// For legacy reasons.
+		templ, found = ns.deps.Tmpl.Lookup(n + ".html")
+	}
+	if found {
+		b := bp.GetBuffer()
+		defer bp.PutBuffer(b)
+
+		if err := templ.Execute(b, context); err != nil {
+			return "", err
 		}
-		if templ != nil {
-			b := bp.GetBuffer()
-			defer bp.PutBuffer(b)
 
-			if err := templ.Execute(b, context); err != nil {
-				return "", err
-			}
-
-			if _, ok := templ.Template.(*texttemplate.Template); ok {
-				s := b.String()
-				if ns.deps.Metrics != nil {
-					ns.deps.Metrics.TrackValue(n, s)
-				}
-				return s, nil
-			}
-
+		if _, ok := templ.(*texttemplate.Template); ok {
 			s := b.String()
 			if ns.deps.Metrics != nil {
 				ns.deps.Metrics.TrackValue(n, s)
 			}
-			return template.HTML(s), nil
-
+			return s, nil
 		}
+
+		s := b.String()
+		if ns.deps.Metrics != nil {
+			ns.deps.Metrics.TrackValue(n, s)
+		}
+		return template.HTML(s), nil
+
 	}
 
 	return "", fmt.Errorf("Partial %q not found", name)

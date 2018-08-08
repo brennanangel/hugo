@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"unicode"
 
+	"github.com/gohugoio/hugo/media"
+
 	"github.com/gohugoio/hugo/common/maps"
 
 	"github.com/gohugoio/hugo/langs"
@@ -228,7 +230,7 @@ type Page struct {
 	title       string
 	Description string
 	Keywords    []string
-	Data        map[string]interface{}
+	data        map[string]interface{}
 
 	pagemeta.PageDates
 
@@ -239,7 +241,8 @@ type Page struct {
 	permalink    string
 	relPermalink string
 
-	// relative target path without extension and any base path element from the baseURL.
+	// relative target path without extension and any base path element
+	// from the baseURL or the language code.
 	// This is used to construct paths in the page resources.
 	relTargetPathBase string
 	// Is set to a forward slashed path if this is a Page resources living in a folder below its owner.
@@ -254,7 +257,7 @@ type Page struct {
 
 	layoutDescriptor output.LayoutDescriptor
 
-	scratch *Scratch
+	scratch *maps.Scratch
 
 	// It would be tempting to use the language set on the Site, but in they way we do
 	// multi-site processing, these values may differ during the initial page processing.
@@ -272,10 +275,14 @@ type Page struct {
 	targetPathDescriptorPrototype *targetPathDescriptor
 }
 
-func stackTrace() string {
-	trace := make([]byte, 2000)
+func stackTrace(length int) string {
+	trace := make([]byte, length)
 	runtime.Stack(trace, true)
 	return string(trace)
+}
+
+func (p *Page) Data() interface{} {
+	return p.data
 }
 
 func (p *Page) initContent() {
@@ -474,6 +481,10 @@ func (p *Page) BundleType() string {
 	}
 
 	return ""
+}
+
+func (p *Page) MediaType() media.Type {
+	return media.OctetType
 }
 
 type Source struct {
@@ -1238,10 +1249,10 @@ func (p *Page) prepareForRender() error {
 	// or a template or similar has changed so wee need to do a rerendering
 	// of the shortcodes etc.
 
-	// If in watch mode or if we have multiple output formats,
+	// If in watch mode or if we have multiple sites or output formats,
 	// we need to keep the original so we can
 	// potentially repeat this process on rebuild.
-	needsACopy := s.running() || len(p.outputFormats) > 1
+	needsACopy := s.running() || len(s.owner.Sites) > 1 || len(p.outputFormats) > 1
 	var workContentCopy []byte
 	if needsACopy {
 		workContentCopy = make([]byte, len(p.workContent))
@@ -1863,6 +1874,30 @@ func (p *Page) FullFilePath() string {
 	return filepath.Join(p.Dir(), p.LogicalName())
 }
 
+// Returns the canonical, absolute fully-qualifed logical reference used by
+// methods such as GetPage and ref/relref shortcodes to refer to
+// this page. It is prefixed with a "/".
+//
+// For pages that have a source file, it is returns the path to this file as an
+// absolute path rooted in this site's content dir.
+// For pages that do not (sections witout content page etc.), it returns the
+// virtual path, consistent with where you would add a source file.
+func (p *Page) absoluteSourceRef() string {
+	if p.Source.File != nil {
+		sourcePath := p.Source.Path()
+		if sourcePath != "" {
+			return "/" + filepath.ToSlash(sourcePath)
+		}
+	}
+
+	if len(p.sections) > 0 {
+		// no backing file, return the virtual source path
+		return "/" + path.Join(p.sections...)
+	}
+
+	return ""
+}
+
 // Pre render prepare steps
 
 func (p *Page) prepareLayouts() error {
@@ -1884,7 +1919,7 @@ func (p *Page) prepareLayouts() error {
 func (p *Page) prepareData(s *Site) error {
 	if p.Kind != KindSection {
 		var pages Pages
-		p.Data = make(map[string]interface{})
+		p.data = make(map[string]interface{})
 
 		switch p.Kind {
 		case KindPage:
@@ -1903,21 +1938,21 @@ func (p *Page) prepareData(s *Site) error {
 			singular := s.taxonomiesPluralSingular[plural]
 			taxonomy := s.Taxonomies[plural].Get(term)
 
-			p.Data[singular] = taxonomy
-			p.Data["Singular"] = singular
-			p.Data["Plural"] = plural
-			p.Data["Term"] = term
+			p.data[singular] = taxonomy
+			p.data["Singular"] = singular
+			p.data["Plural"] = plural
+			p.data["Term"] = term
 			pages = taxonomy.Pages()
 		case KindTaxonomyTerm:
 			plural := p.sections[0]
 			singular := s.taxonomiesPluralSingular[plural]
 
-			p.Data["Singular"] = singular
-			p.Data["Plural"] = plural
-			p.Data["Terms"] = s.Taxonomies[plural]
+			p.data["Singular"] = singular
+			p.data["Plural"] = plural
+			p.data["Terms"] = s.Taxonomies[plural]
 			// keep the following just for legacy reasons
-			p.Data["OrderedIndex"] = p.Data["Terms"]
-			p.Data["Index"] = p.Data["Terms"]
+			p.data["OrderedIndex"] = p.data["Terms"]
+			p.data["Index"] = p.data["Terms"]
 
 			// A list of all KindTaxonomy pages with matching plural
 			for _, p := range s.findPagesByKind(KindTaxonomy) {
@@ -1927,7 +1962,7 @@ func (p *Page) prepareData(s *Site) error {
 			}
 		}
 
-		p.Data["Pages"] = pages
+		p.data["Pages"] = pages
 		p.Pages = pages
 	}
 
@@ -1996,38 +2031,99 @@ func (p *Page) Hugo() *HugoInfo {
 	return hugoInfo
 }
 
-func (p *Page) Ref(refs ...string) (string, error) {
-	if len(refs) == 0 {
-		return "", nil
-	}
-	if len(refs) > 1 {
-		return p.Site.Ref(refs[0], nil, refs[1])
-	}
-	return p.Site.Ref(refs[0], nil)
+// GetPage looks up a page for the given ref.
+//    {{ with .GetPage "blog" }}{{ .Title }}{{ end }}
+//
+// This will return nil when no page could be found, and will return
+// an error if the ref is ambiguous.
+func (p *Page) GetPage(ref string) (*Page, error) {
+	return p.s.getPageNew(p, ref)
 }
 
-func (p *Page) RelRef(refs ...string) (string, error) {
-	if len(refs) == 0 {
+type refArgs struct {
+	Path         string
+	Lang         string
+	OutputFormat string
+}
+
+func (p *Page) decodeRefArgs(args map[string]interface{}) (refArgs, *SiteInfo, error) {
+	var ra refArgs
+	err := mapstructure.WeakDecode(args, &ra)
+	if err != nil {
+		return ra, nil, nil
+	}
+	s := p.Site
+
+	if ra.Lang != "" && ra.Lang != p.Lang() {
+		// Find correct site
+		found := false
+		for _, ss := range p.s.owner.Sites {
+			if ss.Lang() == ra.Lang {
+				found = true
+				s = &ss.Info
+			}
+		}
+
+		if !found {
+			p.s.siteRefLinker.logNotFound(ra.Path, fmt.Sprintf("no site found with lang %q", ra.Lang), p)
+			return ra, nil, nil
+		}
+	}
+
+	return ra, s, nil
+}
+
+func (p *Page) Ref(argsm map[string]interface{}) (string, error) {
+	args, s, err := p.decodeRefArgs(argsm)
+	if err != nil {
+		return "", fmt.Errorf("invalid arguments to Ref: %s", err)
+	}
+
+	if s == nil {
+		return p.s.siteRefLinker.notFoundURL, nil
+	}
+
+	if args.Path == "" {
 		return "", nil
 	}
-	if len(refs) > 1 {
-		return p.Site.RelRef(refs[0], nil, refs[1])
+
+	if args.OutputFormat != "" {
+		return s.Ref(args.Path, p, args.OutputFormat)
 	}
-	return p.Site.RelRef(refs[0], nil)
+	return s.Ref(args.Path, p)
+}
+
+func (p *Page) RelRef(argsm map[string]interface{}) (string, error) {
+	args, s, err := p.decodeRefArgs(argsm)
+	if err != nil {
+		return "", fmt.Errorf("invalid arguments to Ref: %s", err)
+	}
+
+	if s == nil {
+		return p.s.siteRefLinker.notFoundURL, nil
+	}
+
+	if args.Path == "" {
+		return "", nil
+	}
+
+	if args.OutputFormat != "" {
+		return s.RelRef(args.Path, p, args.OutputFormat)
+	}
+	return s.RelRef(args.Path, p)
 }
 
 func (p *Page) String() string {
-	if p.Path() != "" {
-		return fmt.Sprintf("Page(%s)", p.Path())
+	if sourceRef := p.absoluteSourceRef(); sourceRef != "" {
+		return fmt.Sprintf("Page(%s)", sourceRef)
 	}
 	return fmt.Sprintf("Page(%q)", p.title)
-
 }
 
 // Scratch returns the writable context associated with this Page.
-func (p *Page) Scratch() *Scratch {
+func (p *Page) Scratch() *maps.Scratch {
 	if p.scratch == nil {
-		p.scratch = newScratch()
+		p.scratch = maps.NewScratch()
 	}
 	return p.scratch
 }
@@ -2093,7 +2189,7 @@ func (p *Page) shouldAddLanguagePrefix() bool {
 		return false
 	}
 
-	if !p.Site.defaultContentLanguageInSubdir && p.Lang() == p.Site.multilingual.DefaultLang.Lang {
+	if !p.Site.defaultContentLanguageInSubdir && p.Lang() == p.s.multilingual().DefaultLang.Lang {
 		return false
 	}
 
@@ -2106,7 +2202,7 @@ func (p *Page) initLanguage() {
 			return
 		}
 
-		ml := p.Site.multilingual
+		ml := p.s.multilingual()
 		if ml == nil {
 			panic("Multilanguage not set")
 		}

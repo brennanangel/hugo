@@ -14,6 +14,7 @@
 package hugolib
 
 import (
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
@@ -48,74 +49,98 @@ type PageCollections struct {
 	// Includes headless bundles, i.e. bundles that produce no output for its content page.
 	headlessPages Pages
 
-	pageCache *cache.PartitionedLazyCache
+	pageIndex *cache.Lazy
 }
+
+// Get initializes the index if not already done so, then
+// looks up the given page ref, returns nil if no value found.
+func (c *PageCollections) getFromCache(ref string) (*Page, error) {
+	v, found, err := c.pageIndex.Get(ref)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	p := v.(*Page)
+
+	if p != ambiguityFlag {
+		return p, nil
+	}
+	return nil, fmt.Errorf("page reference %q is ambiguous", ref)
+}
+
+var ambiguityFlag = &Page{Kind: kindUnknown, title: "ambiguity flag"}
 
 func (c *PageCollections) refreshPageCaches() {
 	c.indexPages = c.findPagesByKindNotIn(KindPage, c.Pages)
 	c.RegularPages = c.findPagesByKindIn(KindPage, c.Pages)
 	c.AllRegularPages = c.findPagesByKindIn(KindPage, c.AllPages)
 
-	var s *Site
+	indexLoader := func() (map[string]interface{}, error) {
+		index := make(map[string]interface{})
 
-	if len(c.Pages) > 0 {
-		s = c.Pages[0].s
-	}
+		add := func(ref string, p *Page) {
+			existing := index[ref]
+			if existing == nil {
+				index[ref] = p
+			} else if existing != ambiguityFlag && existing != p {
+				index[ref] = ambiguityFlag
+			}
+		}
 
-	cacheLoader := func(kind string) func() (map[string]interface{}, error) {
-		return func() (map[string]interface{}, error) {
-			cache := make(map[string]interface{})
-			switch kind {
-			case KindPage:
-				// Note that we deliberately use the pages from all sites
-				// in this cache, as we intend to use this in the ref and relref
-				// shortcodes. If the user says "sect/doc1.en.md", he/she knows
-				// what he/she is looking for.
-				for _, pageCollection := range []Pages{c.AllRegularPages, c.headlessPages} {
-					for _, p := range pageCollection {
-						cache[filepath.ToSlash(p.Source.Path())] = p
+		for _, pageCollection := range []Pages{c.RegularPages, c.headlessPages} {
+			for _, p := range pageCollection {
+				sourceRef := p.absoluteSourceRef()
 
-						if s != nil && p.s == s {
-							// Ref/Relref supports this potentially ambiguous lookup.
-							cache[p.Source.LogicalName()] = p
-
-							translasionBaseName := p.Source.TranslationBaseName()
-							dir := filepath.ToSlash(strings.TrimSuffix(p.Dir(), helpers.FilePathSeparator))
-
-							if translasionBaseName == "index" {
-								_, name := path.Split(dir)
-								cache[name] = p
-								cache[dir] = p
-							} else {
-								// Again, ambigous
-								cache[translasionBaseName] = p
-							}
-
-							// We need a way to get to the current language version.
-							pathWithNoExtensions := path.Join(dir, translasionBaseName)
-							cache[pathWithNoExtensions] = p
-						}
-					}
-
+				if sourceRef != "" {
+					// index the canonical ref
+					// e.g. /section/article.md
+					add(sourceRef, p)
 				}
-			default:
-				for _, p := range c.indexPages {
-					key := path.Join(p.sections...)
-					cache[key] = p
+
+				// Ref/Relref supports this potentially ambiguous lookup.
+				add(p.Source.LogicalName(), p)
+
+				translationBaseName := p.Source.TranslationBaseName()
+
+				dir, _ := path.Split(sourceRef)
+				dir = strings.TrimSuffix(dir, "/")
+
+				if translationBaseName == "index" {
+					add(dir, p)
+					add(path.Base(dir), p)
+				} else {
+					add(translationBaseName, p)
 				}
+
+				// We need a way to get to the current language version.
+				pathWithNoExtensions := path.Join(dir, translationBaseName)
+				add(pathWithNoExtensions, p)
+			}
+		}
+
+		for _, p := range c.indexPages {
+			// index the canonical, unambiguous ref for any backing file
+			// e.g. /section/_index.md
+			sourceRef := p.absoluteSourceRef()
+			if sourceRef != "" {
+				add(sourceRef, p)
 			}
 
-			return cache, nil
+			ref := path.Join(p.sections...)
+
+			// index the canonical, unambiguous virtual ref
+			// e.g. /section
+			// (this may already have been indexed above)
+			add("/"+ref, p)
 		}
+
+		return index, nil
 	}
 
-	partitions := make([]cache.Partition, len(allKindsInPages))
-
-	for i, kind := range allKindsInPages {
-		partitions[i] = cache.Partition{Key: kind, Load: cacheLoader(kind)}
-	}
-
-	c.pageCache = cache.NewPartitionedLazyCache(partitions...)
+	c.pageIndex = cache.NewLazy(indexLoader)
 }
 
 func newPageCollections() *PageCollections {
@@ -126,20 +151,98 @@ func newPageCollectionsFromPages(pages Pages) *PageCollections {
 	return &PageCollections{rawAllPages: pages}
 }
 
-func (c *PageCollections) getPage(typ string, sections ...string) *Page {
+// This is an adapter func for the old API with Kind as first argument.
+// This is invoked when you do .Site.GetPage. We drop the Kind and fails
+// if there are more than 2 arguments, which would be ambigous.
+func (c *PageCollections) getPageOldVersion(ref ...string) (*Page, error) {
+	var refs []string
+	for _, r := range ref {
+		// A common construct in the wild is
+		// .Site.GetPage "home" "" or
+		// .Site.GetPage "home" "/"
+		if r != "" && r != "/" {
+			refs = append(refs, r)
+		}
+	}
+
 	var key string
-	if len(sections) == 1 {
-		key = filepath.ToSlash(sections[0])
+
+	if len(refs) > 2 {
+		// This was allowed in Hugo <= 0.44, but we cannot support this with the
+		// new API. This should be the most unusual case.
+		return nil, fmt.Errorf(`too many arguments to .Site.GetPage: %v. Use lookups on the form {{ .Site.GetPage "/posts/mypage-md" }}`, ref)
+	}
+
+	if len(refs) == 0 || refs[0] == KindHome {
+		key = "/"
+	} else if len(refs) == 1 {
+		if len(ref) == 2 && refs[0] == KindSection {
+			// This is an old style reference to the "Home Page section".
+			// Typically fetched via {{ .Site.GetPage "section" .Section }}
+			// See https://github.com/gohugoio/hugo/issues/4989
+			key = "/"
+		} else {
+			key = refs[0]
+		}
 	} else {
-		key = path.Join(sections...)
+		key = refs[1]
 	}
 
-	p, _ := c.pageCache.Get(typ, key)
-	if p == nil {
-		return nil
+	key = filepath.ToSlash(key)
+	if !strings.HasPrefix(key, "/") {
+		key = "/" + key
 	}
-	return p.(*Page)
 
+	return c.getPageNew(nil, key)
+}
+
+// 	Only used in tests.
+func (c *PageCollections) getPage(typ string, sections ...string) *Page {
+	refs := append([]string{typ}, path.Join(sections...))
+	p, _ := c.getPageOldVersion(refs...)
+	return p
+}
+
+// Ref is either unix-style paths (i.e. callers responsible for
+// calling filepath.ToSlash as necessary) or shorthand refs.
+func (c *PageCollections) getPageNew(context *Page, ref string) (*Page, error) {
+
+	// Absolute (content root relative) reference.
+	if strings.HasPrefix(ref, "/") {
+		if p, err := c.getFromCache(ref); err == nil && p != nil {
+			return p, nil
+		}
+	} else if context != nil {
+		// Try the page-relative path.
+		ppath := path.Join("/", strings.Join(context.sections, "/"), ref)
+		if p, err := c.getFromCache(ppath); err == nil && p != nil {
+			return p, nil
+		}
+	}
+
+	if !strings.HasPrefix(ref, "/") {
+		// Many people will have "post/foo.md" in their content files.
+		if p, err := c.getFromCache("/" + ref); err == nil && p != nil {
+			if context != nil {
+				// TODO(bep) remove this case and the message below when the storm has passed
+				helpers.DistinctFeedbackLog.Printf(`WARNING: make non-relative ref/relref page reference(s) in page %q absolute, e.g. {{< ref "/blog/my-post.md" >}}`, context.absoluteSourceRef())
+			}
+			return p, nil
+		}
+	}
+
+	// Last try.
+	ref = strings.TrimPrefix(ref, "/")
+	p, err := c.getFromCache(ref)
+
+	if err != nil {
+		if context != nil {
+			return nil, fmt.Errorf("failed to resolve path from page %q: %s", context.absoluteSourceRef(), err)
+		}
+		return nil, fmt.Errorf("failed to resolve page: %s", err)
+	}
+
+	return p, nil
 }
 
 func (*PageCollections) findPagesByKindIn(kind string, inPages Pages) Pages {
@@ -219,7 +322,7 @@ func (c *PageCollections) clearResourceCacheForPage(page *Page) {
 		first := page.Resources[0]
 		dir := path.Dir(first.RelPermalink())
 		dir = strings.TrimPrefix(dir, page.LanguagePrefix())
-		// This is done to keep the memory usage in check when doing live reloads.
-		page.s.resourceSpec.DeleteCacheByPrefix(dir)
+		dir = strings.TrimPrefix(dir, page.s.BaseURL.Path())
+		page.s.ResourceSpec.DeleteCacheByPrefix(dir)
 	}
 }

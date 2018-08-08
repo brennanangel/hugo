@@ -1,17 +1,19 @@
 package deps
 
 import (
-	"io/ioutil"
-	"log"
-	"os"
+	"sync"
 	"time"
+
+	"github.com/gohugoio/hugo/common/loggers"
 
 	"github.com/gohugoio/hugo/config"
 	"github.com/gohugoio/hugo/helpers"
 	"github.com/gohugoio/hugo/hugofs"
 	"github.com/gohugoio/hugo/langs"
+	"github.com/gohugoio/hugo/media"
 	"github.com/gohugoio/hugo/metrics"
 	"github.com/gohugoio/hugo/output"
+	"github.com/gohugoio/hugo/resource"
 	"github.com/gohugoio/hugo/source"
 	"github.com/gohugoio/hugo/tpl"
 	jww "github.com/spf13/jwalterweatherman"
@@ -21,6 +23,7 @@ import (
 // There will be normally only one instance of deps in play
 // at a given time, i.e. one per Site built.
 type Deps struct {
+
 	// The logger to use.
 	Log *jww.Notepad `json:"-"`
 
@@ -29,6 +32,9 @@ type Deps struct {
 
 	// The templates to use. This will usually implement the full tpl.TemplateHandler.
 	Tmpl tpl.TemplateFinder `json:"-"`
+
+	// We use this to parse and execute ad-hoc text templates.
+	TextTmpl tpl.TemplateParseFinder `json:"-"`
 
 	// The file systems to use.
 	Fs *hugofs.Fs `json:"-"`
@@ -41,6 +47,9 @@ type Deps struct {
 
 	// The SourceSpec to use
 	SourceSpec *source.SourceSpec `json:"-"`
+
+	// The Resource Spec to use
+	ResourceSpec *resource.Spec
 
 	// The configuration to use
 	Cfg config.Provider `json:"-"`
@@ -62,6 +71,30 @@ type Deps struct {
 
 	// Timeout is configurable in site config.
 	Timeout time.Duration
+
+	// BuildStartListeners will be notified before a build starts.
+	BuildStartListeners *Listeners
+}
+
+type Listeners struct {
+	sync.Mutex
+
+	// A list of funcs to be notified about an event.
+	listeners []func()
+}
+
+func (b *Listeners) Add(f func()) {
+	b.Lock()
+	defer b.Unlock()
+	b.listeners = append(b.listeners, f)
+}
+
+func (b *Listeners) Notify() {
+	b.Lock()
+	defer b.Unlock()
+	for _, notify := range b.listeners {
+		notify()
+	}
 }
 
 // ResourceProvider is used to create and refresh, and clone resources needed.
@@ -115,7 +148,7 @@ func New(cfg DepsCfg) (*Deps, error) {
 	}
 
 	if logger == nil {
-		logger = jww.NewNotepad(jww.LevelError, jww.LevelError, os.Stdout, ioutil.Discard, "", log.Ldate|log.Ltime)
+		logger = loggers.NewErrorLogger()
 	}
 
 	if fs == nil {
@@ -125,6 +158,11 @@ func New(cfg DepsCfg) (*Deps, error) {
 
 	ps, err := helpers.NewPathSpec(fs, cfg.Language)
 
+	if err != nil {
+		return nil, err
+	}
+
+	resourceSpec, err := resource.NewSpec(ps, logger, cfg.OutputFormats, cfg.MediaTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +191,10 @@ func New(cfg DepsCfg) (*Deps, error) {
 		PathSpec:            ps,
 		ContentSpec:         contentSpec,
 		SourceSpec:          sp,
+		ResourceSpec:        resourceSpec,
 		Cfg:                 cfg.Language,
 		Language:            cfg.Language,
+		BuildStartListeners: &Listeners{},
 		Timeout:             time.Duration(timeoutms) * time.Millisecond,
 	}
 
@@ -167,7 +207,8 @@ func New(cfg DepsCfg) (*Deps, error) {
 
 // ForLanguage creates a copy of the Deps with the language dependent
 // parts switched out.
-func (d Deps) ForLanguage(l *langs.Language) (*Deps, error) {
+func (d Deps) ForLanguage(cfg DepsCfg) (*Deps, error) {
+	l := cfg.Language
 	var err error
 
 	d.PathSpec, err = helpers.NewPathSpecWithBaseBaseFsProvided(d.Fs, l, d.BaseFs)
@@ -180,6 +221,15 @@ func (d Deps) ForLanguage(l *langs.Language) (*Deps, error) {
 		return nil, err
 	}
 
+	// The resource cache is global so reuse.
+	// TODO(bep) clean up these inits.
+	resourceCache := d.ResourceSpec.ResourceCache
+	d.ResourceSpec, err = resource.NewSpec(d.PathSpec, d.Log, cfg.OutputFormats, cfg.MediaTypes)
+	if err != nil {
+		return nil, err
+	}
+	d.ResourceSpec.ResourceCache = resourceCache
+
 	d.Cfg = l
 	d.Language = l
 
@@ -190,6 +240,8 @@ func (d Deps) ForLanguage(l *langs.Language) (*Deps, error) {
 	if err := d.templateProvider.Clone(&d); err != nil {
 		return nil, err
 	}
+
+	d.BuildStartListeners = &Listeners{}
 
 	return &d, nil
 
@@ -211,6 +263,12 @@ type DepsCfg struct {
 
 	// The configuration to use.
 	Cfg config.Provider
+
+	// The media types configured.
+	MediaTypes media.Types
+
+	// The output formats configured.
+	OutputFormats output.Formats
 
 	// Template handling.
 	TemplateProvider ResourceProvider

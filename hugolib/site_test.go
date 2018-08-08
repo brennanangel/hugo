@@ -15,6 +15,7 @@ package hugolib
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -359,6 +360,7 @@ func doTestShouldAlwaysHaveUglyURLs(t *testing.T, uglyURLs bool) {
 
 func TestNewSiteDefaultLang(t *testing.T) {
 	t.Parallel()
+	defer os.Remove("resources")
 	s, err := NewSiteDefaultLang()
 	require.NoError(t, err)
 	require.Equal(t, hugofs.Os, s.Fs.Source)
@@ -872,6 +874,8 @@ func TestWeightedTaxonomies(t *testing.T) {
 func setupLinkingMockSite(t *testing.T) *Site {
 	sources := [][2]string{
 		{filepath.FromSlash("level2/unique.md"), ""},
+		{filepath.FromSlash("_index.md"), ""},
+		{filepath.FromSlash("common.md"), ""},
 		{filepath.FromSlash("rootfile.md"), ""},
 		{filepath.FromSlash("root-image.png"), ""},
 
@@ -882,10 +886,13 @@ func setupLinkingMockSite(t *testing.T) *Site {
 		{filepath.FromSlash("level2/common.png"), ""},
 
 		{filepath.FromSlash("level2/level3/start.md"), ""},
+		{filepath.FromSlash("level2/level3/_index.md"), ""},
 		{filepath.FromSlash("level2/level3/3-root.md"), ""},
 		{filepath.FromSlash("level2/level3/common.md"), ""},
 		{filepath.FromSlash("level2/level3/3-image.png"), ""},
 		{filepath.FromSlash("level2/level3/common.png"), ""},
+
+		{filepath.FromSlash("level2/level3/embedded.dot.md"), ""},
 	}
 
 	cfg, fs := newTestCfg()
@@ -919,14 +926,52 @@ func TestRefLinking(t *testing.T) {
 		relative     bool
 		expected     string
 	}{
+		// different refs resolving to the same unique filename:
+		{"/level2/unique.md", "", true, "/level2/unique/"},
+		{"../unique.md", "", true, "/level2/unique/"},
 		{"unique.md", "", true, "/level2/unique/"},
+
 		{"level2/common.md", "", true, "/level2/common/"},
 		{"3-root.md", "", true, "/level2/level3/3-root/"},
+		{"../..", "", true, "/"},
+
+		// different refs resolving to the same ambiguous top-level filename:
+		{"../../common.md", "", true, "/common/"},
+		{"/common.md", "", true, "/common/"},
+
+		// different refs resolving to the same ambiguous level-2 filename:
+		{"/level2/common.md", "", true, "/level2/common/"},
+		{"../common.md", "", true, "/level2/common/"},
+		{"common.md", "", true, "/level2/level3/common/"},
+
+		// different refs resolving to the same section:
+		{"/level2", "", true, "/level2/"},
+		{"..", "", true, "/level2/"},
+		{"../", "", true, "/level2/"},
+
+		// different refs resolving to the same subsection:
+		{"/level2/level3", "", true, "/level2/level3/"},
+		{"/level2/level3/_index.md", "", true, "/level2/level3/"},
+		{".", "", true, "/level2/level3/"},
+		{"./", "", true, "/level2/level3/"},
+
+		// try to confuse parsing
+		{"embedded.dot.md", "", true, "/level2/level3/embedded.dot/"},
+
+		//test empty link, as well as fragment only link
+		{"", "", true, ""},
 	} {
-		if out, err := site.Info.refLink(test.link, currentPage, test.relative, test.outputFormat); err != nil || out != test.expected {
-			t.Errorf("[%d] Expected %s to resolve to (%s), got (%s) - error: %s", i, test.link, test.expected, out, err)
-		}
+		checkLinkCase(site, test.link, currentPage, test.relative, test.outputFormat, test.expected, t, i)
+
+		//make sure fragment links are also handled
+		checkLinkCase(site, test.link+"#intro", currentPage, test.relative, test.outputFormat, test.expected+"#intro", t, i)
 	}
 
 	// TODO: and then the failure cases.
+}
+
+func checkLinkCase(site *Site, link string, currentPage *Page, relative bool, outputFormat string, expected string, t *testing.T, i int) {
+	if out, err := site.refLink(link, currentPage, relative, outputFormat); err != nil || out != expected {
+		t.Errorf("[%d] Expected %q from %q to resolve to %q, got %q - error: %s", i, link, currentPage.absoluteSourceRef(), expected, out, err)
+	}
 }

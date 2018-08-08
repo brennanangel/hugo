@@ -34,7 +34,7 @@ func New(deps *deps.Deps) *Namespace {
 	if deps.Fs != nil {
 		rfs = deps.Fs.WorkingDir
 		if deps.PathSpec != nil && deps.PathSpec.BaseFs != nil {
-			rfs = afero.NewReadOnlyFs(afero.NewCopyOnWriteFs(deps.PathSpec.BaseFs.ContentFs, deps.Fs.WorkingDir))
+			rfs = afero.NewReadOnlyFs(afero.NewCopyOnWriteFs(deps.PathSpec.BaseFs.Content.Fs, deps.Fs.WorkingDir))
 		}
 	}
 
@@ -129,4 +129,23 @@ func (ns *Namespace) FileExists(i interface{}) (bool, error) {
 	}
 
 	return status, nil
+}
+
+// Stat returns the os.FileInfo structure describing file.
+func (ns *Namespace) Stat(i interface{}) (_os.FileInfo, error) {
+	path, err := cast.ToStringE(i)
+	if err != nil {
+		return nil, err
+	}
+
+	if path == "" {
+		return nil, errors.New("fileStat needs a path to a file")
+	}
+
+	r, err := ns.readFileFs.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
 }

@@ -79,7 +79,7 @@ var EmbeddedTemplates = [][2]string{
 	{`disqus.html`, `{{- $pc := .Page.Site.Config.Privacy.Disqus -}}
 {{- if not $pc.Disable -}}
 {{ if .Site.DisqusShortname }}<div id="disqus_thread"></div>
-<script>
+<script type="application/javascript">
     var disqus_config = function () {
     {{with .GetParam "disqus_identifier" }}this.page.identifier = '{{ . }}';{{end}}
     {{with .GetParam "disqus_title" }}this.page.title = '{{ . }}';{{end}}
@@ -102,7 +102,7 @@ var EmbeddedTemplates = [][2]string{
 	{`google_analytics.html`, `{{- $pc := .Site.Config.Privacy.GoogleAnalytics -}}
 {{- if not $pc.Disable -}}
 {{ with .Site.GoogleAnalytics }}
-<script>
+<script type="application/javascript">
 {{ template "__ga_js_set_doNotTrack" $ }}
 if (!doNotTrack) {
 	(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
@@ -141,7 +141,7 @@ var doNotTrack = (dnt == "1" || dnt == "yes");
 	{`google_analytics_async.html`, `{{- $pc := .Site.Config.Privacy.GoogleAnalytics -}}
 {{- if not $pc.Disable -}}
 {{ with .Site.GoogleAnalytics }}
-<script>
+<script type="application/javascript">
 {{ template "__ga_js_set_doNotTrack" $ }}
 if (!doNotTrack) {
 	window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
@@ -165,7 +165,8 @@ if (!doNotTrack) {
 </script>
 <script async src='https://www.google-analytics.com/analytics.js'></script>
 {{ end }}
-{{- end -}}`},
+{{- end -}}
+`},
 	{`google_news.html`, `{{ if .IsPage }}{{ with .Params.news_keywords }}
   <meta name="news_keywords" content="{{ range $i, $kw := first 10 . }}{{ if $i }},{{ end }}{{ $kw }}{{ end }}" />
 {{ end }}{{ end }}`},
@@ -216,13 +217,12 @@ if (!doNotTrack) {
 {{ if gt $pag.TotalPages 1 }}
 <ul class="pagination">
     {{ with $pag.First }}
-    <li>
-        <a href="{{ .URL }}" aria-label="First"><span aria-hidden="true">&laquo;&laquo;</span></a>
+    <li class="page-item">
+        <a href="{{ .URL }}" class="page-link" aria-label="First"><span aria-hidden="true">&laquo;&laquo;</span></a>
     </li>
     {{ end }}
-    <li
-    {{ if not $pag.HasPrev }}class="disabled"{{ end }}>
-    <a href="{{ if $pag.HasPrev }}{{ $pag.Prev.URL }}{{ end }}" aria-label="Previous"><span aria-hidden="true">&laquo;</span></a>
+    <li class="page-item{{ if not $pag.HasPrev }} disabled{{ end }}">
+    <a href="{{ if $pag.HasPrev }}{{ $pag.Prev.URL }}{{ end }}" class="page-link" aria-label="Previous"><span aria-hidden="true">&laquo;</span></a>
     </li>
     {{ $.Scratch.Set "__paginator.ellipsed" false }}
     {{ range $pag.Pagers }}
@@ -237,19 +237,17 @@ if (!doNotTrack) {
         {{ $.Scratch.Set "__paginator.ellipsed" true }}
     {{ end }}
     {{ if $showNumber }}
-    <li
-    {{ if eq . $pag }}class="active"{{ end }}><a href="{{ .URL }}">{{ .PageNumber }}</a></li>
+    <li class="page-item{{ if eq . $pag }} active{{ end }}"><a class="page-link" href="{{ .URL }}">{{ .PageNumber }}</a></li>
     {{ else if ($.Scratch.Get "__paginator.shouldEllipse") }}
-    <li class="disabled"><span aria-hidden="true">&hellip;</span></li>
+    <li class="page-item disabled"><span aria-hidden="true">&nbsp;&hellip;&nbsp;</span></li>
     {{ end }}
     {{ end }}
-    <li
-    {{ if not $pag.HasNext }}class="disabled"{{ end }}>
-    <a href="{{ if $pag.HasNext }}{{ $pag.Next.URL }}{{ end }}" aria-label="Next"><span aria-hidden="true">&raquo;</span></a>
+    <li class="page-item{{ if not $pag.HasNext }} disabled{{ end }}">
+    <a href="{{ if $pag.HasNext }}{{ $pag.Next.URL }}{{ end }}" class="page-link" aria-label="Next"><span aria-hidden="true">&raquo;</span></a>
     </li>
     {{ with $pag.Last }}
-    <li>
-        <a href="{{ .URL }}" aria-label="Last"><span aria-hidden="true">&raquo;&raquo;</span></a>
+    <li class="page-item">
+        <a href="{{ .URL }}" class="page-link" aria-label="Last"><span aria-hidden="true">&raquo;&raquo;</span></a>
     </li>
     {{ end }}
 </ul>
@@ -322,7 +320,7 @@ if (!doNotTrack) {
     {{ end }}
 </figure>
 <!-- image -->`},
-	{`shortcodes/gist.html`, `<script src="//gist.github.com/{{ index .Params 0 }}/{{ index .Params 1 }}.js{{if len .Params | eq 3 }}?file={{ index .Params 2 }}{{end}}"></script>`},
+	{`shortcodes/gist.html`, `<script type="application/javascript" src="//gist.github.com/{{ index .Params 0 }}/{{ index .Params 1 }}.js{{if len .Params | eq 3 }}?file={{ index .Params 2 }}{{end}}"></script>`},
 	{`shortcodes/highlight.html`, `{{ if len .Params | eq 2 }}{{ highlight (trim .Inner "\n\r") (.Get 0) (.Get 1) }}{{ else }}{{ highlight (trim .Inner "\n\r") (.Get 0) "" }}{{ end }}`},
 	{`shortcodes/instagram.html`, `{{- $pc := .Page.Site.Config.Privacy.Instagram -}}
 {{- if not $pc.Disable -}}
@@ -382,8 +380,8 @@ if (!doNotTrack) {
 </style>
 {{ end }}
 {{ end }}`},
-	{`shortcodes/ref.html`, `{{ if len .Params | eq 2 }}{{ ref .Page (.Get 0) (.Get 1) }}{{ else }}{{ ref .Page (.Get 0) }}{{ end }}`},
-	{`shortcodes/relref.html`, `{{ if len .Params | eq 2 }}{{ relref .Page (.Get 0) (.Get 1) }}{{ else }}{{ relref .Page (.Get 0) }}{{ end }}`},
+	{`shortcodes/ref.html`, `{{ ref .Page .Params }}`},
+	{`shortcodes/relref.html`, `{{ relref .Page .Params }}`},
 	{`shortcodes/twitter.html`, `{{- $pc := .Page.Site.Config.Privacy.Twitter -}}
 {{- if not $pc.Disable -}}
 {{- if $pc.Simple -}}

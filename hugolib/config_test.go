@@ -42,6 +42,8 @@ func TestLoadConfig(t *testing.T) {
 	assert.Equal("side", cfg.GetString("paginatePath"))
 	// default
 	assert.Equal("layouts", cfg.GetString("layoutDir"))
+	// no themes
+	assert.False(cfg.IsSet("allThemes"))
 }
 
 func TestLoadMultiConfig(t *testing.T) {
@@ -219,8 +221,11 @@ map[string]interface {}{
     "mediatype": Type{
       MainType: "text",
       SubType: "m1",
-      Suffix: "m1main",
+      OldSuffix: "m1main",
       Delimiter: ".",
+      Suffixes: []string{
+        "m1main",
+      },
     },
   },
   "o2": map[string]interface {}{
@@ -228,8 +233,11 @@ map[string]interface {}{
     "mediatype": Type{
       MainType: "text",
       SubType: "m2",
-      Suffix: "m2theme",
+      OldSuffix: "m2theme",
       Delimiter: ".",
+      Suffixes: []string{
+        "m2theme",
+      },
     },
   },
 }`, got["outputformats"])
@@ -384,6 +392,6 @@ privacyEnhanced = true
 	b.WithConfigFile("toml", tomlConfig)
 	b.Build(BuildCfg{SkipRender: true})
 
-	assert.True(b.H.Sites[0].Info.Config.Privacy.YouTube.PrivacyEnhanced)
+	assert.True(b.H.Sites[0].Info.Config().Privacy.YouTube.PrivacyEnhanced)
 
 }

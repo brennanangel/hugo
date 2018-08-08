@@ -1,4 +1,4 @@
-// Copyright 2017-present The Hugo Authors. All rights reserved.
+// Copyright 2018 The Hugo Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ type imageCache struct {
 
 func (c *imageCache) isInCache(key string) bool {
 	c.mu.RLock()
-	_, found := c.store[key]
+	_, found := c.store[c.normalizeKey(key)]
 	c.mu.RUnlock()
 	return found
 }
@@ -41,11 +41,22 @@ func (c *imageCache) isInCache(key string) bool {
 func (c *imageCache) deleteByPrefix(prefix string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prefix = c.normalizeKey(prefix)
 	for k := range c.store {
 		if strings.HasPrefix(k, prefix) {
 			delete(c.store, k)
 		}
 	}
+}
+
+func (c *imageCache) normalizeKey(key string) string {
+	// It is a path with Unix style slashes and it always starts with a leading slash.
+	key = filepath.ToSlash(key)
+	if !strings.HasPrefix(key, "/") {
+		key = "/" + key
+	}
+
+	return key
 }
 
 func (c *imageCache) clear() {
@@ -59,12 +70,6 @@ func (c *imageCache) getOrCreate(
 
 	relTarget := parent.relTargetPathFromConfig(conf)
 	key := parent.relTargetPathForRel(relTarget.path(), false)
-
-	if c.pathSpec.Language != nil {
-		// Avoid do and store more work than needed. The language versions will in
-		// most cases be duplicates of the same image files.
-		key = strings.TrimPrefix(key, "/"+c.pathSpec.Language.Lang)
-	}
 
 	// First check the in-memory store, then the disk.
 	c.mu.RLock()
@@ -88,23 +93,23 @@ func (c *imageCache) getOrCreate(
 	//  but the count of processed image variations for this site.
 	c.pathSpec.ProcessingStats.Incr(&c.pathSpec.ProcessingStats.ProcessedImages)
 
-	exists, err := helpers.Exists(cacheFilename, c.pathSpec.BaseFs.ResourcesFs)
+	exists, err := helpers.Exists(cacheFilename, c.pathSpec.BaseFs.Resources.Fs)
 	if err != nil {
 		return nil, err
 	}
 
 	if exists {
 		img = parent.clone()
-		img.relTargetPath.file = relTarget.file
-		img.sourceFilename = cacheFilename
-		// We have to look resources file system for this.
-		img.overriddenSourceFs = img.spec.BaseFs.ResourcesFs
 	} else {
 		img, err = create(cacheFilename)
 		if err != nil {
 			return nil, err
 		}
 	}
+	img.relTargetDirFile.file = relTarget.file
+	img.sourceFilename = cacheFilename
+	// We have to look in the resources file system for this.
+	img.overriddenSourceFs = img.spec.BaseFs.Resources.Fs
 
 	c.mu.Lock()
 	if img2, found := c.store[key]; found {

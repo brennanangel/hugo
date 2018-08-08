@@ -69,7 +69,7 @@ func headlessPagesPublisher(s *Site, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for _, page := range s.headlessPages {
 		outFormat := page.outputFormats[0] // There is only one
-		if outFormat != s.rc.Format {
+		if outFormat.Name != s.rc.Format.Name {
 			// Avoid double work.
 			continue
 		}
@@ -92,7 +92,7 @@ func pageRenderer(s *Site, pages <-chan *Page, results chan<- error, wg *sync.Wa
 
 		for i, outFormat := range page.outputFormats {
 
-			if outFormat != page.s.rc.Format {
+			if outFormat.Name != page.s.rc.Format.Name {
 				// Will be rendered  ... later.
 				continue
 			}
@@ -168,7 +168,8 @@ func pageRenderer(s *Site, pages <-chan *Page, results chan<- error, wg *sync.Wa
 					results <- err
 				}
 
-				if pageOutput.IsNode() {
+				// Only render paginators for the main output format
+				if i == 0 && pageOutput.IsNode() {
 					if err := s.renderPaginator(pageOutput); err != nil {
 						results <- err
 					}
@@ -194,7 +195,7 @@ func (s *Site) renderPaginator(p *PageOutput) error {
 
 		// TODO(bep) do better
 		link := newOutputFormat(p.Page, p.outputFormat).Permalink()
-		if err := s.writeDestAlias(target, link, nil); err != nil {
+		if err := s.writeDestAlias(target, link, p.outputFormat, nil); err != nil {
 			return err
 		}
 
@@ -252,7 +253,7 @@ func (s *Site) renderRSS(p *PageOutput) error {
 	limit := s.Cfg.GetInt("rssLimit")
 	if limit >= 0 && len(p.Pages) > limit {
 		p.Pages = p.Pages[:limit]
-		p.Data["Pages"] = p.Pages
+		p.data["Pages"] = p.Pages
 	}
 
 	layouts, err := s.layoutHandler.For(
@@ -279,7 +280,7 @@ func (s *Site) render404() error {
 	p := s.newNodePage(kind404)
 
 	p.title = "404 Page not found"
-	p.Data["Pages"] = s.Pages
+	p.data["Pages"] = s.Pages
 	p.Pages = s.Pages
 	p.URLPath.URL = "404.html"
 
@@ -326,7 +327,7 @@ func (s *Site) renderSitemap() error {
 	page.Sitemap.Priority = sitemapDefault.Priority
 	page.Sitemap.Filename = sitemapDefault.Filename
 
-	n.Data["Pages"] = pages
+	n.data["Pages"] = pages
 	n.Pages = pages
 
 	// TODO(bep) we have several of these
@@ -369,7 +370,7 @@ func (s *Site) renderRobotsTXT() error {
 	if err := p.initTargetPathDescriptor(); err != nil {
 		return err
 	}
-	p.Data["Pages"] = s.Pages
+	p.data["Pages"] = s.Pages
 	p.Pages = s.Pages
 
 	rLayouts := []string{"robots.txt", "_default/robots.txt", "_internal/_default/robots.txt"}
@@ -416,7 +417,7 @@ func (s *Site) renderAliases() error {
 					a = path.Join(lang, a)
 				}
 
-				if err := s.writeDestAlias(a, plink, p); err != nil {
+				if err := s.writeDestAlias(a, plink, f, p); err != nil {
 					return err
 				}
 			}
@@ -424,18 +425,21 @@ func (s *Site) renderAliases() error {
 	}
 
 	if s.owner.multilingual.enabled() && !s.owner.IsMultihost() {
-		mainLang := s.owner.multilingual.DefaultLang
-		if s.Info.defaultContentLanguageInSubdir {
-			mainLangURL := s.PathSpec.AbsURL(mainLang.Lang, false)
-			s.Log.DEBUG.Printf("Write redirect to main language %s: %s", mainLang, mainLangURL)
-			if err := s.publishDestAlias(true, "/", mainLangURL, nil); err != nil {
-				return err
-			}
-		} else {
-			mainLangURL := s.PathSpec.AbsURL("", false)
-			s.Log.DEBUG.Printf("Write redirect to main language %s: %s", mainLang, mainLangURL)
-			if err := s.publishDestAlias(true, mainLang.Lang, mainLangURL, nil); err != nil {
-				return err
+		html, found := s.outputFormatsConfig.GetByName("HTML")
+		if found {
+			mainLang := s.owner.multilingual.DefaultLang
+			if s.Info.defaultContentLanguageInSubdir {
+				mainLangURL := s.PathSpec.AbsURL(mainLang.Lang, false)
+				s.Log.DEBUG.Printf("Write redirect to main language %s: %s", mainLang, mainLangURL)
+				if err := s.publishDestAlias(true, "/", mainLangURL, html, nil); err != nil {
+					return err
+				}
+			} else {
+				mainLangURL := s.PathSpec.AbsURL("", false)
+				s.Log.DEBUG.Printf("Write redirect to main language %s: %s", mainLang, mainLangURL)
+				if err := s.publishDestAlias(true, mainLang.Lang, mainLangURL, html, nil); err != nil {
+					return err
+				}
 			}
 		}
 	}

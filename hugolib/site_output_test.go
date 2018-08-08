@@ -47,13 +47,14 @@ baseURL = "http://example.com/blog"
 paginate = 1
 defaultContentLanguage = "en"
 
-disableKinds = ["page", "section", "taxonomy", "taxonomyTerm", "RSS", "sitemap", "robotsTXT", "404"]
+disableKinds = ["section", "taxonomy", "taxonomyTerm", "RSS", "sitemap", "robotsTXT", "404"]
 
 [Taxonomies]
 tag = "tags"
 category = "categories"
 
 defaultContentLanguage = "en"
+
 
 [languages]
 
@@ -125,8 +126,10 @@ List HTML|{{.Title }}|
 Partial Hugo 1: {{ partial "GoHugo.html" . }}
 Partial Hugo 2: {{ partial "GoHugo" . -}}
 Content: {{ .Content }}
+Len Pages: {{ .Kind }} {{ len .Site.RegularPages }} Page Number: {{ .Paginator.PageNumber }}
 {{ end }}
 `,
+		"layouts/_default/single.html", `{{ define "main" }}{{ .Content }}{{ end }}`,
 	)
 	require.Len(t, h.Sites, 2)
 
@@ -134,6 +137,11 @@ Content: {{ .Content }}
 
 	writeSource(t, fs, "content/_index.md", fmt.Sprintf(pageTemplate, "JSON Home", outputsStr))
 	writeSource(t, fs, "content/_index.nn.md", fmt.Sprintf(pageTemplate, "JSON Nynorsk Heim", outputsStr))
+
+	for i := 1; i <= 10; i++ {
+		writeSource(t, fs, fmt.Sprintf("content/p%d.md", i), fmt.Sprintf(pageTemplate, fmt.Sprintf("Page %d", i), outputsStr))
+
+	}
 
 	err := h.Build(BuildCfg{})
 
@@ -171,11 +179,15 @@ Content: {{ .Content }}
 		th.assertFileContent("public/index.html",
 			// The HTML entity is a deliberate part of this test: The HTML templates are
 			// parsed with html/template.
-			`List HTML|JSON Home|<atom:link href=http://example.com/blog/ rel="self" type="text/html&#43;html" />`,
+			`List HTML|JSON Home|<atom:link href=http://example.com/blog/ rel="self" type="text/html" />`,
 			"en: Elbow",
 			"ShortHTML",
 			"OtherShort: <h1>Hi!</h1>",
+			"Len Pages: home 10",
 		)
+		th.assertFileContent("public/page/2/index.html", "Page Number: 2")
+		th.assertFileNotExist("public/page/2/index.json")
+
 		th.assertFileContent("public/nn/index.html",
 			"List HTML|JSON Nynorsk Heim|",
 			"nn: Olboge")
@@ -183,7 +195,7 @@ Content: {{ .Content }}
 		th.assertFileContent("public/index.json",
 			"Output/Rel: JSON/canonical|",
 			// JSON is plain text, so no need to safeHTML this and that
-			`<atom:link href=http://example.com/blog/index.json rel="self" type="application/json+json" />`,
+			`<atom:link href=http://example.com/blog/index.json rel="self" type="application/json" />`,
 			"ShortJSON",
 			"OtherShort: <h1>Hi!</h1>",
 		)

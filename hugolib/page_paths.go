@@ -139,7 +139,11 @@ func (p *Page) initURLs() error {
 		return err
 	}
 
-	p.relTargetPathBase = strings.TrimSuffix(target, f.MediaType.FullSuffix())
+	p.relTargetPathBase = strings.TrimPrefix(strings.TrimSuffix(target, f.MediaType.FullSuffix()), "/")
+	if prefix := p.s.GetLanguagePrefix(); prefix != "" {
+		// Any language code in the path will be added later.
+		p.relTargetPathBase = strings.TrimPrefix(p.relTargetPathBase, prefix+"/")
+	}
 	p.relPermalink = p.s.PathSpec.PrependBasePath(rel)
 	p.layoutDescriptor = p.createLayoutDescriptor()
 	return nil
@@ -235,7 +239,7 @@ func createTargetPath(d targetPathDescriptor) string {
 		}
 
 		if isUgly {
-			pagePath += d.Type.MediaType.Delimiter + d.Type.MediaType.Suffix
+			pagePath += d.Type.MediaType.FullSuffix()
 		} else {
 			pagePath = filepath.Join(pagePath, d.Type.BaseName+d.Type.MediaType.FullSuffix())
 		}

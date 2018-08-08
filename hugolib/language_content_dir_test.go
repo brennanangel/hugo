@@ -81,6 +81,9 @@ weight: %d
 
 Content.
 
+SVP3-REF: {{< ref path="/sect/page3.md" lang="sv" >}}
+SVP3-RELREF: {{< relref path="/sect/page3.md" lang="sv" >}}
+
 `
 
 	pageBundleTemplate := `
@@ -206,6 +209,37 @@ Content.
 	assert.Equal(13, len(enSite.RegularPages))
 
 	assert.Equal(10, len(svSite.RegularPages))
+
+	svP2, err := svSite.getPageNew(nil, "/sect/page2.md")
+	assert.NoError(err)
+	nnP2, err := nnSite.getPageNew(nil, "/sect/page2.md")
+	assert.NoError(err)
+
+	enP2, err := enSite.getPageNew(nil, "/sect/page2.md")
+	assert.NoError(err)
+	assert.Equal("en", enP2.Lang())
+	assert.Equal("sv", svP2.Lang())
+	assert.Equal("nn", nnP2.Lang())
+
+	content, _ := nnP2.Content()
+	assert.Contains(content, "SVP3-REF: https://example.org/sv/sect/p-sv-3/")
+	assert.Contains(content, "SVP3-RELREF: /sv/sect/p-sv-3/")
+
+	// Test RelRef with and without language indicator.
+	nn3RefArgs := map[string]interface{}{
+		"path": "/sect/page3.md",
+		"lang": "nn",
+	}
+	nnP3RelRef, err := svP2.RelRef(
+		nn3RefArgs,
+	)
+	assert.NoError(err)
+	assert.Equal("/nn/sect/p-nn-3/", nnP3RelRef)
+	nnP3Ref, err := svP2.Ref(
+		nn3RefArgs,
+	)
+	assert.NoError(err)
+	assert.Equal("https://example.org/nn/sect/p-nn-3/", nnP3Ref)
 
 	for i, p := range enSite.RegularPages {
 		j := i + 1

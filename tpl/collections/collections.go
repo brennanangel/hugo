@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/common/types"
 	"github.com/gohugoio/hugo/deps"
 	"github.com/gohugoio/hugo/helpers"
@@ -74,7 +75,7 @@ func (ns *Namespace) After(index interface{}, seq interface{}) (interface{}, err
 	}
 
 	if indexv >= seqv.Len() {
-		return nil, errors.New("no items left")
+		return seqv.Slice(0, 0).Interface(), nil
 	}
 
 	return seqv.Slice(indexv, seqv.Len()).Interface(), nil
@@ -649,4 +650,10 @@ func (ns *Namespace) Uniq(l interface{}) (interface{}, error) {
 // KeyVals creates a key and values wrapper.
 func (ns *Namespace) KeyVals(key interface{}, vals ...interface{}) (types.KeyValues, error) {
 	return types.KeyValues{Key: key, Values: vals}, nil
+}
+
+// NewScratch creates a new Scratch which can be used to store values in a
+// thread safe way.
+func (ns *Namespace) NewScratch() *maps.Scratch {
+	return maps.NewScratch()
 }

@@ -183,6 +183,12 @@ related
 relativeURLs (false)
 : Enable this to make all relative URLs relative to content root. Note that this does not affect absolute URLs.
 
+refLinksErrorLevel ("ERROR") 
+: When using `ref` or `relref` to resolve page links and a link cannot resolved, it will be logged with this logg level. Valid values are `ERROR` (default) or `WARNING`. Any `ERROR` will fail the build (`exit -1`).
+
+refLinksNotFoundURL
+: URL to be used as a placeholder when a page reference cannot be found in `ref` or `relref`. Is used as-is.
+
 rssLimit (unlimited)
 : Maximum number of items in the RSS feed.
 
@@ -193,7 +199,7 @@ sitemap
 : Default [sitemap configuration](/templates/sitemap-template/#configure-sitemap-xml).
 
 staticDir ("static")
-: Relative directory from where Hugo reads static files.
+: A directory or a list of directories from where Hugo reads [static files][static-files].
 
 stepAnalysis (false)
 : Display memory and timing of different steps of the program.
@@ -405,3 +411,4 @@ Hugo v0.20 introduced the ability to render your content to multiple output form
 [templates]: /templates/
 [toml]: https://github.com/toml-lang/toml
 [yaml]: http://yaml.org/spec/
+[static-files]: /content-management/static-files/

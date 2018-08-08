@@ -33,6 +33,8 @@ var globalOnlySettings = map[string]bool{
 	strings.ToLower("defaultContentLanguageInSubdir"): true,
 	strings.ToLower("defaultContentLanguage"):         true,
 	strings.ToLower("multilingual"):                   true,
+	strings.ToLower("assetDir"):                       true,
+	strings.ToLower("resourceDir"):                    true,
 }
 
 // Language manages specific-language configuration.
@@ -47,7 +49,7 @@ type Language struct {
 	// If set per language, this tells Hugo that all content files without any
 	// language indicator (e.g. my-page.en.md) is in this language.
 	// This is usually a path relative to the working dir, but it can be an
-	// absolute directory referenece. It is what we get.
+	// absolute directory reference. It is what we get.
 	ContentDir string
 
 	Cfg config.Provider

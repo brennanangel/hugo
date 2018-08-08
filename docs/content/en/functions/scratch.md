@@ -22,6 +22,9 @@ aliases: [/extras/scratch/,/doc/scratch/]
 
 In most cases you can do okay without `Scratch`, but due to scoping issues, there are many use cases that aren't solvable in Go Templates without `Scratch`'s help.
 
+`.Scratch` is available as methods on `Page` and `Shortcode`. Since Hugo 0.43 you can also create a locally scoped `Scratch` using the template func `newScratch`.
+
+
 {{% note %}}
 See [this Go issue](https://github.com/golang/go/issues/10608) for the main motivation behind Scratch.
 {{% /note %}}
@@ -30,11 +33,19 @@ See [this Go issue](https://github.com/golang/go/issues/10608) for the main moti
 For a detailed analysis of `.Scratch` and in context use cases, see this [post](https://regisphilibert.com/blog/2017/04/hugo-scratch-explained-variable/).
 {{% /note %}}
 
-## Methods
+## Get a Scratch
 
-`Scratch` is added to both `Page` and `Shortcode` -- with following methods:
+From Hugo `0.43` you can also create a locally scoped `Scratch` by calling `newScratch`:
+
+```go-html-template
+$scratch := newScratch
+$scratch.Set "greeting" "Hello"
+```
+
+A `Scratch` is also added to both `Page` and `Shortcode`. `Scratch` has the following methods:
 
 #### .Set
+
 Set the given value to a given key
 
 ```go-html-template

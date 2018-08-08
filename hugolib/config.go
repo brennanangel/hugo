@@ -285,6 +285,11 @@ func loadThemeConfig(d ConfigSourceDescriptor, v1 *viper.Viper) ([]string, error
 	if err != nil {
 		return nil, err
 	}
+
+	if len(themeConfigs) == 0 {
+		return nil, nil
+	}
+
 	v1.Set("allThemes", themeConfigs)
 
 	var configFilenames []string
@@ -411,6 +416,7 @@ func loadDefaultSettingsFor(v *viper.Viper) error {
 	v.SetDefault("metaDataFormat", "toml")
 	v.SetDefault("contentDir", "content")
 	v.SetDefault("layoutDir", "layouts")
+	v.SetDefault("assetDir", "assets")
 	v.SetDefault("staticDir", "static")
 	v.SetDefault("resourceDir", "resources")
 	v.SetDefault("archetypeDir", "archetypes")
